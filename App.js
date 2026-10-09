@@ -217,11 +217,36 @@ useEffect(() => {
     return () => clearInterval(timer);
   }, [status, ghostRun]);
 
-  const speak = (message) => {
+    const speak = async (message) => {
     if (voiceCommand) {
-      try { Speech.stop(); Speech.speak(message); } catch (e) {}
+      try { 
+        Speech.stop(); 
+        
+        if (soundRef.current && playing) {
+          await soundRef.current.setVolumeAsync(0.15).catch(() => {});
+        }
+        
+        Speech.speak(message, {
+          onDone: async () => {
+            if (soundRef.current && playing) {
+              await soundRef.current.setVolumeAsync(1.0).catch(() => {});
+            }
+          },
+          onStopped: async () => {
+            if (soundRef.current && playing) {
+              await soundRef.current.setVolumeAsync(1.0).catch(() => {});
+            }
+          },
+          onError: async () => {
+            if (soundRef.current && playing) {
+              await soundRef.current.setVolumeAsync(1.0).catch(() => {});
+            }
+          }
+        }); 
+      } catch (e) {}
     }
   };
+
 
   const handleVoiceToggle = (val) => {
     setVoiceCommand(val);
