@@ -25,7 +25,7 @@
       "package": "com.raftaar.gpstracker",
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyDbQS5NKUlHYSuU77bx3bjLEeNliZHgRdc"
+          "apiKey": "AIzaSyDbQS5NKULHYSuU77bx3bjLEeNliZhgRdc"
         }
       },
       "permissions": [
