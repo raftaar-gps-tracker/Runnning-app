@@ -1,8 +1,14 @@
 {
   "expo": {
-    "name": "ranting-green-scone",
-    "slug": "snack-498b78ad-e6da-4347-bda9-5f2fc44d2291",
+    "name": "raftaar-gps-tracker",
+    "owner": "raftaar-gps-trackers-team",
+    "slug": "raftaar-",
     "version": "1.0.0",
+    "extra": {
+      "eas": {
+        "projectId": "70bf787f-6be1-451e-b2bd-e57499ae8d8b"
+      }
+    },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
