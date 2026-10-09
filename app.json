@@ -23,6 +23,11 @@
     },
     "android": {
       "package": "com.raftaar.gpstracker",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDbQS5NKUlHYSuU77bx3bjLEeNliZHgRdc"
+        }
+      },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
