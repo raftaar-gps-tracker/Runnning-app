@@ -171,7 +171,13 @@ function AppContent() {
   const statusRef = useRef("ready");
   const soundRef = useRef(null);
   const topSpeedRef = useRef(0);
-
+useEffect(() => {
+    Audio.setAudioModeAsync({
+      staysActiveInBackground: true,
+      shouldDuckAndroid: true,
+      playThroughEarpieceAndroid: false,
+    }).catch(console.warn);
+  }, []);
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { elapsedRef.current = elapsed; }, [elapsed]);
   useEffect(() => { distanceRef.current = distance; }, [distance]);
