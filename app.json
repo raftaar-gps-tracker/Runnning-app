@@ -1,43 +1,58 @@
 {
   "expo": {
     "name": "Raftaar",
-    "owner": "raftaar-gps-trackers-team",
-    "slug": "raftaar-",
+    "slug": "raftaar",
     "version": "1.0.0",
-    "extra": {
-      "eas": {
-        "projectId": "70bf787f-6be1-451e-b2bd-e57499ae8d8b"
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#091016"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location",
+          "audio"
+        ]
       }
     },
-    "orientation": "portrait",
-    "icon": "./icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
-    "ios": {
-      "supportsTablet": true
-    },
     "android": {
-      "package": "com.raftaar.gpstracker",
-      "config": {
-        "googleMaps": {
-          "apiKey": "AIzaSyDbQS5NKULHYSuU77bx3bjLEeNliZhgRdc"
-        }
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#091016"
       },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
-        "READ_EXTERNAL_STORAGE"
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "WAKE_LOCK",
+        "READ_EXTERNAL_STORAGE",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
-      "adaptiveIcon": {
-        "foregroundImage": "./adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true
-    }
+      "package": "com.raftaar.tracker"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Raftaar to use your location."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow Raftaar to access your microphone."
+        }
+      ]
+    ]
   }
 }
