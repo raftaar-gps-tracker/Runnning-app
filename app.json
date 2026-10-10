@@ -37,7 +37,12 @@
         "WAKE_LOCK",
         "READ_EXTERNAL_STORAGE"
       ],
-      "package": "com.raftaar.tracker"
+      "package": "com.raftaar.tracker",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDbQS5NKULHYSuU77bx3bjLEeNliZhgRdc"
+        }
+      }
     },
     "plugins": [
       [
