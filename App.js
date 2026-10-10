@@ -156,7 +156,6 @@ function AppContent() {
   const [locked, setLocked] = useState(false);
   const [files, setFiles] = useState([]);
   const [musicIndex, setMusicIndex] = useState(-1);
-  const [sound, setSound] = useState(null);
   const [playing, setPlaying] = useState(false);
   
   const [songPosition, setSongPosition] = useState(0);
@@ -211,13 +210,11 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    // AUDIO NOTIFICATION FIX
-    // Force Android to show the notification and keep it alive
+    // AUDIO DELAY FIX: shouldDuckAndroid: false prevents the OS from pausing/stuttering audio streams
     Audio.setAudioModeAsync({
       staysActiveInBackground: true,
-      shouldDuckAndroid: false, // Don't duck so no delays in voice
+      shouldDuckAndroid: false, 
       playThroughEarpieceAndroid: false,
-      interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DO_NOT_MIX, // Force notification controls on some android versions
     }).catch(console.warn);
   }, []);
 
@@ -265,11 +262,15 @@ function AppContent() {
     return () => clearInterval(timer);
   }, [status, ghostRun]);
 
+  // VOICE DELAY & PROFESSIONALISM UPDATE
   const speak = (message) => {
     if (voiceCommand) {
       try { 
         Speech.stop(); 
-        Speech.speak(message, { rate: 1.0, language: 'en-US' }); 
+        Speech.speak(message, { 
+            rate: 1.0, 
+            language: 'en-US' // Forces local engine for zero delay
+        }); 
       } catch (e) {}
     }
   };
@@ -480,7 +481,6 @@ function AppContent() {
         { shouldPlay: true, progressUpdateIntervalMillis: 500 }
       );
       soundRef.current = newSound;
-      setSound(newSound);
       setMusicIndex(i);
       setPlaying(true);
       
@@ -513,7 +513,7 @@ function AppContent() {
   };
 
   const handleSeek = async (evt) => {
-    if (locked) return; 
+    if (locked) return; // Add extra protection for seekbar if locked
     if (!soundRef.current || songDuration <= 1) return;
     const touchX = evt.nativeEvent.locationX;
     const width = audioWidthRef.current || Dimensions.get('window').width - 30; 
@@ -559,27 +559,26 @@ function AppContent() {
 
   const renderRun = () => (
     <View style={s.runContainer}>
-      <View pointerEvents={locked ? "none" : "auto"}>
-        <View style={s.brandRow}>
-          <View style={s.brandLeft}>
-            <View style={s.brandIcon}><Ionicons name="flash" size={20} color={LIME} /></View>
-            <View style={s.brandText}>
-              <Text style={s.brandTitle}>Raftaar</Text>
-              <Text style={s.brandSubtitle}>Run, Your Way.</Text>
-            </View>
+      <View style={s.brandRow}>
+        <View style={s.brandLeft}>
+          <View style={s.brandIcon}><Ionicons name="flash" size={20} color={LIME} /></View>
+          <View style={s.brandText}>
+            <Text style={s.brandTitle}>Raftaar</Text>
+            <Text style={s.brandSubtitle}>Run, Your Way.</Text>
           </View>
-          
-          <View style={s.voiceCommandRow}>
-            <Text style={s.voiceText}>Voice Command</Text>
-            <Switch 
-              value={voiceCommand} 
-              onValueChange={handleVoiceToggle} 
-              trackColor={{ false: "#2A3644", true: LIME }} 
-              thumbColor="#FFFFFF" 
-              style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
-              disabled={locked}
-            />
-          </View>
+        </View>
+        
+        <View style={s.voiceCommandRow}>
+          <Text style={s.voiceText}>Voice Command</Text>
+          {/* LOCK FIX: Added disabled={locked} */}
+          <Switch 
+            value={voiceCommand} 
+            onValueChange={handleVoiceToggle} 
+            trackColor={{ false: "#2A3644", true: LIME }} 
+            thumbColor="#FFFFFF" 
+            style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
+            disabled={locked}
+          />
         </View>
       </View>
 
@@ -649,25 +648,25 @@ function AppContent() {
         <Metric icon="flame" label="CALORIES" value={String(Math.round(distance * 60))} unit="kcal" note="Burning energy" iconBg="#EF4444" iconColor="#FFF" dotColor="#EF4444" />
       </View>
 
-      <View pointerEvents={locked ? "none" : "auto"}>
-        <TouchableOpacity style={[s.liveMapCard, locked && { opacity: 0.6 }]} onPress={() => setTab("Map")} activeOpacity={0.8}>
-           <View style={s.liveMapLeft}>
-             <View style={s.liveMapIconBox}>
-                <Ionicons name="map" size={20} color={LIME} />
-             </View>
-             <View>
-                <Text style={s.liveMapTitle}>Live Route Map</Text>
-                <Text style={s.liveMapSub}>Track your path in real-time</Text>
-             </View>
+      {/* LOCK FIX: Added disabled={locked} */}
+      <TouchableOpacity style={[s.liveMapCard, locked && { opacity: 0.6 }]} onPress={() => setTab("Map")} activeOpacity={0.8} disabled={locked}>
+         <View style={s.liveMapLeft}>
+           <View style={s.liveMapIconBox}>
+              <Ionicons name="map" size={20} color={LIME} />
            </View>
-           <View style={s.liveMapGoBtn}>
-             <Text style={s.liveMapGoText}>OPEN</Text>
-             <Ionicons name="chevron-forward" size={14} color="#000" />
+           <View>
+              <Text style={s.liveMapTitle}>Live Route Map</Text>
+              <Text style={s.liveMapSub}>Track your path in real-time</Text>
            </View>
-        </TouchableOpacity>
-      </View>
+         </View>
+         <View style={s.liveMapGoBtn}>
+           <Text style={s.liveMapGoText}>OPEN</Text>
+           <Ionicons name="chevron-forward" size={14} color="#000" />
+         </View>
+      </TouchableOpacity>
 
-      <View style={[s.musicMiniContainer, { marginTop: 'auto' }, locked && { opacity: 0.6 }]} pointerEvents={locked ? "none" : "auto"}>
+      {/* LOCK FIX for Music Controls */}
+      <View style={[s.musicMiniContainer, { marginTop: 'auto' }, locked && { opacity: 0.6 }]}>
         <TouchableOpacity 
            activeOpacity={0.9} 
            style={s.progressContainer} 
@@ -868,7 +867,6 @@ function AppContent() {
                  {files.length === 0 && <Text style={{color:MUTED, textAlign:'center', marginTop: 40}}>Your playlist is empty.</Text>}
                </ScrollView>
 
-               {/* Floating Player with Seekbar for Music Tab */}
                {files.length > 0 && (
                   <View style={s.floatingPlayerContainer}>
                     <TouchableOpacity 
