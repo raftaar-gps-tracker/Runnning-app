@@ -168,7 +168,7 @@ function AppContent() {
   const [selectedRun, setSelectedRun] = useState(null);
   const [ghostRun, setGhostRun] = useState(null);
   const [ghostDistance, setGhostDistance] = useState(0);
-  const [ghostDrawnRoute, setGhostDrawnRoute] = useState([]); // NEW: For drawing ghost route dynamically
+  const [ghostDrawnRoute, setGhostDrawnRoute] = useState([]);
   const [replayIdx, setReplayIdx] = useState(-1);
   const [showGhostResult, setShowGhostResult] = useState(false);
   const [ghostStats, setGhostStats] = useState(null);
@@ -210,9 +210,10 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    // AUDIO DELAY FIX: shouldDuckAndroid: false prevents the OS from pausing/stuttering audio streams
     Audio.setAudioModeAsync({
       staysActiveInBackground: true,
-      shouldDuckAndroid: true,
+      shouldDuckAndroid: false, 
       playThroughEarpieceAndroid: false,
     }).catch(console.warn);
   }, []);
@@ -233,7 +234,6 @@ function AppContent() {
     }).catch(() => {});
   }, []);
 
-  // Update Elapsed Time and Draw Ghost Route Dynamically
   useEffect(() => {
     if (status !== "running") return;
     const timer = setInterval(() => {
@@ -262,18 +262,22 @@ function AppContent() {
     return () => clearInterval(timer);
   }, [status, ghostRun]);
 
+  // VOICE DELAY & PROFESSIONALISM UPDATE
   const speak = (message) => {
     if (voiceCommand) {
       try { 
         Speech.stop(); 
-        Speech.speak(message, { rate: 1.0 }); 
+        Speech.speak(message, { 
+            rate: 1.0, 
+            language: 'en-US' // Forces local engine for zero delay
+        }); 
       } catch (e) {}
     }
   };
 
   const handleVoiceToggle = (val) => {
     setVoiceCommand(val);
-    if (val) speak("Voice command activated");
+    if (val) speak("Voice systems activated.");
   };
 
   const stopWatch = useCallback(async () => {
@@ -287,11 +291,10 @@ function AppContent() {
     setRegion({ latitude: c.latitude, longitude: c.longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 });
 
     if (c.accuracy != null && c.accuracy > 50) { setGpsMessage("Weak GPS"); return; }
-    setGpsMessage(c.accuracy == null ? "GPS connected" : c.accuracy <= 15 ? "GPS excellent" : "GPS connected");
+    setGpsMessage(c.accuracy == null ? "GPS signal locked." : c.accuracy <= 15 ? "GPS signal optimal." : "GPS signal locked.");
 
     if (statusRef.current !== "running") return;
 
-    // GPS JUMP FIX: Ignore highly inaccurate location updates during the run
     if (c.accuracy != null && c.accuracy > 25) return;
 
     const previous = lastPoint.current;
@@ -305,8 +308,6 @@ function AppContent() {
     const dt = Math.max(0.1, (point.timestamp - previous.timestamp) / 1000);
     
     if (meters < 2) return;
-    
-    // GPS JUMP FIX: Speed threshold. If calculated speed is > 36 km/h (10 meters/sec), it's likely a GPS jump glitch. Ignore it.
     if (meters / dt > 10) return;
 
     lastPoint.current = point;
@@ -322,7 +323,7 @@ function AppContent() {
       if (Math.floor(next) > lastMilestoneRef.current) {
          lastMilestoneRef.current = Math.floor(next);
          const mins = Math.floor(elapsedRef.current / 60);
-         speak(`Distance, ${lastMilestoneRef.current} kilometer. Time, ${mins} minutes.`);
+         speak(`Milestone reached. Distance: ${lastMilestoneRef.current} kilometers. Elapsed time: ${mins} minutes.`);
       }
       return next; 
     });
@@ -354,8 +355,8 @@ function AppContent() {
       if (!ok) { setStatus("ready"); statusRef.current = "ready"; return; }
       elapsedBase.current = 0; elapsedRef.current = 0; startAt.current = Date.now(); distanceRef.current = 0; routeRef.current = []; topSpeedRef.current = 0; lastMilestoneRef.current = 0;
       setGhostDrawnRoute([]);
-      setElapsed(0); setDistance(0); setSpeed(0); setRoute([]); setGpsMessage("Searching GPS");
-      speak(ghostRun ? "Ghost race started. Good luck!" : "Workout started. Let's go!");
+      setElapsed(0); setDistance(0); setSpeed(0); setRoute([]); setGpsMessage("Acquiring GPS signal.");
+      speak(ghostRun ? "Ghost race initiated. Target acquired." : "Activity started. GPS locked.");
     } catch (e) { setStatus("ready"); Alert.alert("Error", e?.message); } finally { setBusy(false); }
   };
 
@@ -363,7 +364,7 @@ function AppContent() {
     if (status !== "running") return;
     elapsedBase.current = elapsedRef.current; startAt.current = null;
     setStatus("paused"); statusRef.current = "paused"; setSpeed(0); await stopWatch();
-    speak("Workout paused");
+    speak("Activity paused.");
   };
 
   const resumeRun = async () => {
@@ -374,7 +375,7 @@ function AppContent() {
       const ok = await startWatch();
       if (!ok) { setStatus("paused"); statusRef.current = "paused"; return; }
       lastPoint.current = null; startAt.current = Date.now();
-      speak("Workout resumed");
+      speak("Activity resumed.");
     } catch (e) { setStatus("paused"); Alert.alert("Error", e?.message); } finally { setBusy(false); }
   };
 
@@ -387,7 +388,7 @@ function AppContent() {
 
   const finishRun = async () => {
     if (status === "ready") { resetRun(); return; }
-    speak("Workout stopped");
+    
     await stopWatch();
     
     const avgSpd = elapsedRef.current > 0 ? (distanceRef.current / (elapsedRef.current / 3600)) : 0;
@@ -414,9 +415,14 @@ function AppContent() {
       if (ghostRun) {
          setGhostStats({ current: saved, ghost: ghostRun });
          setShowGhostResult(true);
+         const diff = finalDist - ghostRun.distance;
+         if (diff >= 0) speak("Session complete. Target defeated. Excellent performance.");
+         else speak("Session complete. Target not reached. Keep pushing your limits.");
       } else {
-         speak(`Workout saved. Total distance: ${finalDist.toFixed(2)} kilometers.`);
+         speak(`Session completed. Total distance: ${finalDist.toFixed(2)} kilometers.`);
       }
+    } else {
+       speak("Activity stopped.");
     }
     
     await resetRun(); 
@@ -507,6 +513,7 @@ function AppContent() {
   };
 
   const handleSeek = async (evt) => {
+    if (locked) return; // Add extra protection for seekbar if locked
     if (!soundRef.current || songDuration <= 1) return;
     const touchX = evt.nativeEvent.locationX;
     const width = audioWidthRef.current || Dimensions.get('window').width - 30; 
@@ -563,12 +570,14 @@ function AppContent() {
         
         <View style={s.voiceCommandRow}>
           <Text style={s.voiceText}>Voice Command</Text>
+          {/* LOCK FIX: Added disabled={locked} */}
           <Switch 
             value={voiceCommand} 
             onValueChange={handleVoiceToggle} 
             trackColor={{ false: "#2A3644", true: LIME }} 
             thumbColor="#FFFFFF" 
             style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
+            disabled={locked}
           />
         </View>
       </View>
@@ -632,14 +641,15 @@ function AppContent() {
          </View>
       )}
 
-      <View style={s.grid} pointerEvents={locked ? "none" : "auto"}>
+      <View style={s.grid}>
         <Metric icon="navigate" label="DISTANCE" value={distance.toFixed(2)} unit="km" note={gpsMessage} iconBg={LIME} iconColor="#000" dotColor={LIME} />
         <Metric icon="flash" label="LIVE PACE" value={livePace} unit="/km" note="Calculating..." iconBg="#3B82F6" iconColor="#FFF" dotColor="#3B82F6" />
         <Metric icon="flash" label="LIVE SPEED" value={liveSpeed} unit="km/h" note="Live GPS" iconBg="#8B5CF6" iconColor="#FFF" dotColor="#3B82F6" />
         <Metric icon="flame" label="CALORIES" value={String(Math.round(distance * 60))} unit="kcal" note="Burning energy" iconBg="#EF4444" iconColor="#FFF" dotColor="#EF4444" />
       </View>
 
-      <TouchableOpacity style={s.liveMapCard} onPress={() => setTab("Map")} activeOpacity={0.8} pointerEvents={locked ? "none" : "auto"}>
+      {/* LOCK FIX: Added disabled={locked} */}
+      <TouchableOpacity style={[s.liveMapCard, locked && { opacity: 0.6 }]} onPress={() => setTab("Map")} activeOpacity={0.8} disabled={locked}>
          <View style={s.liveMapLeft}>
            <View style={s.liveMapIconBox}>
               <Ionicons name="map" size={20} color={LIME} />
@@ -655,12 +665,14 @@ function AppContent() {
          </View>
       </TouchableOpacity>
 
-      <View style={[s.musicMiniContainer, { marginTop: 'auto' }]} pointerEvents={locked ? "none" : "auto"}>
+      {/* LOCK FIX for Music Controls */}
+      <View style={[s.musicMiniContainer, { marginTop: 'auto' }, locked && { opacity: 0.6 }]}>
         <TouchableOpacity 
            activeOpacity={0.9} 
            style={s.progressContainer} 
            onPress={handleSeek}
            onLayout={(e) => audioWidthRef.current = e.nativeEvent.layout.width}
+           disabled={locked}
         >
            <View style={s.progressBg}>
               <View style={[s.progressFill, { width: `${progressPercent}%` }]} />
@@ -669,7 +681,7 @@ function AppContent() {
         </TouchableOpacity>
 
         <View style={s.musicMini}>
-          <TouchableOpacity style={s.musicMiniLeft} onPress={files.length === 0 ? chooseMusic : undefined}>
+          <TouchableOpacity style={s.musicMiniLeft} onPress={files.length === 0 ? chooseMusic : undefined} disabled={locked}>
              <Ionicons name="musical-note" size={14} color={MUTED} style={{marginTop: 2}}/>
              <View style={s.musicMiniTextContainer}>
                 <Text numberOfLines={1} style={s.musicMiniTitle}>{files[musicIndex]?.name || "Choose music to play..."}</Text>
@@ -677,13 +689,13 @@ function AppContent() {
              </View>
           </TouchableOpacity>
           <View style={s.musicControls}>
-            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex - 1)}>
+            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex - 1)} disabled={locked}>
               <Ionicons name="play-skip-back" size={16} color="#DCE6EF" />
             </TouchableOpacity>
-            <TouchableOpacity style={s.miniPlay} onPress={toggleMusic}>
+            <TouchableOpacity style={s.miniPlay} onPress={toggleMusic} disabled={locked}>
               <Ionicons name={playing ? "pause" : "play"} size={16} color="#000" style={!playing ? { marginLeft: 2 } : {}} />
             </TouchableOpacity>
-            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex + 1)}>
+            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex + 1)} disabled={locked}>
               <Ionicons name="play-skip-forward" size={16} color="#DCE6EF" />
             </TouchableOpacity>
           </View>
@@ -819,7 +831,6 @@ function AppContent() {
                     <MapView mapType={mapType} customMapStyle={mapDarkStyle} style={StyleSheet.absoluteFill} initialRegion={region} region={region} showsUserLocation>
                         <Polyline coordinates={route} strokeColor={LIME} strokeWidth={4}/>
                         
-                        {/* LIVE DYNAMIC GHOST ROUTE */}
                         {ghostRun && ghostDrawnRoute.length > 0 && (
                            <>
                               <Polyline coordinates={ghostDrawnRoute} strokeColor="#FF4444" strokeWidth={4} strokeDashPattern={[10, 10]} />
@@ -856,7 +867,6 @@ function AppContent() {
                  {files.length === 0 && <Text style={{color:MUTED, textAlign:'center', marginTop: 40}}>Your playlist is empty.</Text>}
                </ScrollView>
 
-               {/* Floating Player with Seekbar for Music Tab */}
                {files.length > 0 && (
                   <View style={s.floatingPlayerContainer}>
                     <TouchableOpacity 
