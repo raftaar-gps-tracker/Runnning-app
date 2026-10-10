@@ -73,6 +73,14 @@ const paceText = (seconds, km) => {
   return `${String(Math.floor(p / 60)).padStart(2, "0")}:${String(p % 60).padStart(2, "0")}`;
 };
 
+const formatAudioTime = (millis) => {
+  if (!millis) return "0:00";
+  const totalSeconds = Math.floor(millis / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+};
+
 function Action({ icon, label, color = "#B0BEC5", onPress, disabled }) {
   return (
     <TouchableOpacity style={[s.action, disabled && { opacity: 0.4 }]} onPress={onPress} disabled={disabled} activeOpacity={0.75}>
@@ -148,8 +156,11 @@ function AppContent() {
   const [locked, setLocked] = useState(false);
   const [files, setFiles] = useState([]);
   const [musicIndex, setMusicIndex] = useState(-1);
-  const [sound, setSound] = useState(null);
   const [playing, setPlaying] = useState(false);
+  
+  const [songPosition, setSongPosition] = useState(0);
+  const [songDuration, setSongDuration] = useState(1);
+
   const [busy, setBusy] = useState(false);
   const [region, setRegion] = useState(null);
   const [mapType, setMapType] = useState("standard");
@@ -157,6 +168,7 @@ function AppContent() {
   const [selectedRun, setSelectedRun] = useState(null);
   const [ghostRun, setGhostRun] = useState(null);
   const [ghostDistance, setGhostDistance] = useState(0);
+  const [ghostDrawnRoute, setGhostDrawnRoute] = useState([]); // NEW: For drawing ghost route dynamically
   const [replayIdx, setReplayIdx] = useState(-1);
   const [showGhostResult, setShowGhostResult] = useState(false);
   const [ghostStats, setGhostStats] = useState(null);
@@ -171,13 +183,40 @@ function AppContent() {
   const statusRef = useRef("ready");
   const soundRef = useRef(null);
   const topSpeedRef = useRef(0);
-useEffect(() => {
+  const lastMilestoneRef = useRef(0);
+  const audioWidthRef = useRef(0); 
+
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setGpsMessage("Permission denied");
+        return;
+      }
+      try {
+        let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        setRegion({
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005,
+        });
+        setAccuracy(location.coords.accuracy);
+        setGpsMessage("GPS connected");
+      } catch (error) {
+        setGpsMessage("Searching GPS...");
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     Audio.setAudioModeAsync({
       staysActiveInBackground: true,
       shouldDuckAndroid: true,
       playThroughEarpieceAndroid: false,
     }).catch(console.warn);
   }, []);
+
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { elapsedRef.current = elapsed; }, [elapsed]);
   useEffect(() => { distanceRef.current = distance; }, [distance]);
@@ -194,6 +233,7 @@ useEffect(() => {
     }).catch(() => {});
   }, []);
 
+  // Update Elapsed Time and Draw Ghost Route Dynamically
   useEffect(() => {
     if (status !== "running") return;
     const timer = setInterval(() => {
@@ -204,57 +244,36 @@ useEffect(() => {
         if (ghostRun && ghostRun.route && ghostRun.route.length > 0) {
           let gDist = 0;
           const firstTime = ghostRun.route[0].timestamp;
-          for (let i = 1; i < ghostRun.route.length; i++) {
+          let currentGhostPath = [];
+          for (let i = 0; i < ghostRun.route.length; i++) {
              const dt = (ghostRun.route[i].timestamp - firstTime) / 1000;
              if (dt <= currentElapsed) {
-                 gDist += haversine(ghostRun.route[i-1], ghostRun.route[i]) / 1000;
+                 currentGhostPath.push(ghostRun.route[i]);
+                 if (i > 0) {
+                     gDist += haversine(ghostRun.route[i-1], ghostRun.route[i]) / 1000;
+                 }
              } else break;
           }
           setGhostDistance(gDist);
+          setGhostDrawnRoute(currentGhostPath);
         }
       }
     }, 500);
     return () => clearInterval(timer);
   }, [status, ghostRun]);
 
-    const speak = async (message) => {
+  const speak = (message) => {
     if (voiceCommand) {
       try { 
         Speech.stop(); 
-        
-        if (soundRef.current && playing) {
-          await soundRef.current.setVolumeAsync(0.15).catch(() => {});
-        }
-        
-        Speech.speak(message, {
-          onDone: async () => {
-            if (soundRef.current && playing) {
-              await soundRef.current.setVolumeAsync(1.0).catch(() => {});
-            }
-          },
-          onStopped: async () => {
-            if (soundRef.current && playing) {
-              await soundRef.current.setVolumeAsync(1.0).catch(() => {});
-            }
-          },
-          onError: async () => {
-            if (soundRef.current && playing) {
-              await soundRef.current.setVolumeAsync(1.0).catch(() => {});
-            }
-          }
-        }); 
+        Speech.speak(message, { rate: 1.0 }); 
       } catch (e) {}
     }
   };
 
-
   const handleVoiceToggle = (val) => {
     setVoiceCommand(val);
-    if (val) {
-      Speech.speak("Voice command activated");
-    } else {
-      Speech.speak("Voice command deactivated");
-    }
+    if (val) speak("Voice command activated");
   };
 
   const stopWatch = useCallback(async () => {
@@ -271,23 +290,43 @@ useEffect(() => {
     setGpsMessage(c.accuracy == null ? "GPS connected" : c.accuracy <= 15 ? "GPS excellent" : "GPS connected");
 
     if (statusRef.current !== "running") return;
+
+    // GPS JUMP FIX: Ignore highly inaccurate location updates during the run
+    if (c.accuracy != null && c.accuracy > 25) return;
+
     const previous = lastPoint.current;
     if (!previous) {
       lastPoint.current = point;
       setRoute(old => { const next = [...old, point]; routeRef.current = next; return next; });
       return;
     }
+    
     const meters = haversine(previous, point);
     const dt = Math.max(0.1, (point.timestamp - previous.timestamp) / 1000);
+    
     if (meters < 2) return;
-    if (meters / dt > 8) { lastPoint.current = point; return; }
+    
+    // GPS JUMP FIX: Speed threshold. If calculated speed is > 36 km/h (10 meters/sec), it's likely a GPS jump glitch. Ignore it.
+    if (meters / dt > 10) return;
 
     lastPoint.current = point;
     const currentSpeed = (meters / dt) * 3.6;
+    
     setSpeed(currentSpeed);
     if (currentSpeed > topSpeedRef.current) topSpeedRef.current = currentSpeed;
     
-    setDistance(old => { const next = old + meters / 1000; distanceRef.current = next; return next; });
+    setDistance(old => { 
+      const next = old + meters / 1000; 
+      distanceRef.current = next; 
+      
+      if (Math.floor(next) > lastMilestoneRef.current) {
+         lastMilestoneRef.current = Math.floor(next);
+         const mins = Math.floor(elapsedRef.current / 60);
+         speak(`Distance, ${lastMilestoneRef.current} kilometer. Time, ${mins} minutes.`);
+      }
+      return next; 
+    });
+    
     setRoute(old => { if (old.length >= 6000) return old; const next = [...old, point]; routeRef.current = next; return next; });
   }, []);
 
@@ -313,9 +352,10 @@ useEffect(() => {
       setStatus("running"); statusRef.current = "running";
       const ok = await startWatch();
       if (!ok) { setStatus("ready"); statusRef.current = "ready"; return; }
-      elapsedBase.current = 0; elapsedRef.current = 0; startAt.current = Date.now(); distanceRef.current = 0; routeRef.current = []; topSpeedRef.current = 0;
+      elapsedBase.current = 0; elapsedRef.current = 0; startAt.current = Date.now(); distanceRef.current = 0; routeRef.current = []; topSpeedRef.current = 0; lastMilestoneRef.current = 0;
+      setGhostDrawnRoute([]);
       setElapsed(0); setDistance(0); setSpeed(0); setRoute([]); setGpsMessage("Searching GPS");
-      speak(ghostRun ? "Ghost race started" : "Run started");
+      speak(ghostRun ? "Ghost race started. Good luck!" : "Workout started. Let's go!");
     } catch (e) { setStatus("ready"); Alert.alert("Error", e?.message); } finally { setBusy(false); }
   };
 
@@ -323,7 +363,7 @@ useEffect(() => {
     if (status !== "running") return;
     elapsedBase.current = elapsedRef.current; startAt.current = null;
     setStatus("paused"); statusRef.current = "paused"; setSpeed(0); await stopWatch();
-    speak("Run paused");
+    speak("Workout paused");
   };
 
   const resumeRun = async () => {
@@ -334,15 +374,15 @@ useEffect(() => {
       const ok = await startWatch();
       if (!ok) { setStatus("paused"); statusRef.current = "paused"; return; }
       lastPoint.current = null; startAt.current = Date.now();
-      speak("Run resumed");
+      speak("Workout resumed");
     } catch (e) { setStatus("paused"); Alert.alert("Error", e?.message); } finally { setBusy(false); }
   };
 
   const resetRun = async () => {
     await stopWatch();
     setStatus("ready"); statusRef.current = "ready";
-    setElapsed(0); setDistance(0); setSpeed(0); setAccuracy(null); setGpsMessage("Waiting for GPS"); setRoute([]); setGhostRun(null); setGhostDistance(0);
-    elapsedBase.current = 0; elapsedRef.current = 0; distanceRef.current = 0; routeRef.current = []; startAt.current = null; lastPoint.current = null; topSpeedRef.current = 0;
+    setElapsed(0); setDistance(0); setSpeed(0); setAccuracy(null); setGpsMessage("Waiting for GPS"); setRoute([]); setGhostRun(null); setGhostDistance(0); setGhostDrawnRoute([]);
+    elapsedBase.current = 0; elapsedRef.current = 0; distanceRef.current = 0; routeRef.current = []; startAt.current = null; lastPoint.current = null; topSpeedRef.current = 0; lastMilestoneRef.current = 0;
   };
 
   const finishRun = async () => {
@@ -372,16 +412,10 @@ useEffect(() => {
       await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(next)).catch(() => {});
       
       if (ghostRun) {
-         setGhostStats({
-           current: saved,
-           ghost: ghostRun
-         });
+         setGhostStats({ current: saved, ghost: ghostRun });
          setShowGhostResult(true);
-         const diff = finalDist - ghostRun.distance;
-         if (diff >= 0) speak("You beat your ghost! Excellent job.");
-         else speak("Workout finished. Keep practicing to beat your ghost.");
       } else {
-         speak("Workout saved successfully");
+         speak(`Workout saved. Total distance: ${finalDist.toFixed(2)} kilometers.`);
       }
     }
     
@@ -414,6 +448,7 @@ useEffect(() => {
             soundRef.current = null;
             setPlaying(false);
             setMusicIndex(-1);
+            setSongPosition(0);
           }
           setFiles(old => {
             const updated = old.filter((_, i) => i !== index);
@@ -437,21 +472,24 @@ useEffect(() => {
       }
       const { sound: newSound } = await Audio.Sound.createAsync(
         { uri: item.uri },
-        { shouldPlay: true }
+        { shouldPlay: true, progressUpdateIntervalMillis: 500 }
       );
       soundRef.current = newSound;
-      setSound(newSound);
       setMusicIndex(i);
       setPlaying(true);
       
       newSound.setOnPlaybackStatusUpdate(status => {
-        if (status.didJustFinish) {
-          playMusicAt(i + 1); // Auto play next
+        if (status.isLoaded) {
+            setSongPosition(status.positionMillis || 0);
+            setSongDuration(status.durationMillis || 1);
+            if (status.didJustFinish) {
+                playMusicAt(i + 1);
+            }
         }
       });
     } catch (e) {
       console.log(e);
-      Alert.alert("Playback error", "Could not play this audio file. It might be corrupted or unsupported.");
+      Alert.alert("Playback error", "Could not play this audio file.");
     }
   };
 
@@ -466,6 +504,17 @@ useEffect(() => {
       if (st.isLoaded && st.isPlaying) { await soundRef.current.pauseAsync(); setPlaying(false); } 
       else if (st.isLoaded) { await soundRef.current.playAsync(); setPlaying(true); }
     } catch (_) { setPlaying(false); }
+  };
+
+  const handleSeek = async (evt) => {
+    if (!soundRef.current || songDuration <= 1) return;
+    const touchX = evt.nativeEvent.locationX;
+    const width = audioWidthRef.current || Dimensions.get('window').width - 30; 
+    const percentage = Math.max(0, Math.min(1, touchX / width));
+    const seekTo = percentage * songDuration;
+    
+    setSongPosition(seekTo);
+    await soundRef.current.setPositionAsync(seekTo);
   };
 
   const deleteHistory = id => {
@@ -499,6 +548,7 @@ useEffect(() => {
   const liveSpeed = speed > 0.3 ? speed.toFixed(1) : "0.0";
   const livePace = speed > 0.3 ? paceText(3600, speed) : "--:--";
   const maxGraphDist = Math.max(...history.slice(0, 7).map(h => h.distance), 1);
+  const progressPercent = Math.min(100, (songPosition / songDuration) * 100);
 
   const renderRun = () => (
     <View style={s.runContainer}>
@@ -540,7 +590,7 @@ useEffect(() => {
               <View style={[s.statusDot, { backgroundColor: status === "running" ? LIME : status === "paused" ? "#FFC52F" : "#8A9AA8" }]} />
               <Text style={s.statusText}>{status === "running" ? "RUNNING" : status === "paused" ? "PAUSED" : "READY"}</Text>
             </View>
-            <Text style={s.timer}>{timeText(elapsed)}</Text>
+            <Text style={s.timer} adjustsFontSizeToFit numberOfLines={1}>{timeText(elapsed)}</Text>
             <Text style={s.elapsedLabel}>ELAPSED TIME</Text>
           </View>
 
@@ -589,23 +639,56 @@ useEffect(() => {
         <Metric icon="flame" label="CALORIES" value={String(Math.round(distance * 60))} unit="kcal" note="Burning energy" iconBg="#EF4444" iconColor="#FFF" dotColor="#EF4444" />
       </View>
 
-      <TouchableOpacity style={s.musicMini} onPress={files.length === 0 ? chooseMusic : undefined} disabled={locked}>
-        <View style={s.musicMiniLeft}>
-           <Ionicons name="musical-note" size={14} color={MUTED} />
-           <Text numberOfLines={1} style={s.musicMiniTitle}>{files[musicIndex]?.name || "Choose music to play..."}</Text>
-        </View>
-        <View style={s.musicControls} pointerEvents={locked ? "none" : "auto"}>
-          <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex - 1)}>
-            <Ionicons name="play-skip-back" size={16} color="#DCE6EF" />
-          </TouchableOpacity>
-          <TouchableOpacity style={s.miniPlay} onPress={toggleMusic}>
-            <Ionicons name={playing ? "pause" : "play"} size={16} color="#000" style={!playing ? { marginLeft: 2 } : {}} />
-          </TouchableOpacity>
-          <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex + 1)}>
-            <Ionicons name="play-skip-forward" size={16} color="#DCE6EF" />
-          </TouchableOpacity>
-        </View>
+      <TouchableOpacity style={s.liveMapCard} onPress={() => setTab("Map")} activeOpacity={0.8} pointerEvents={locked ? "none" : "auto"}>
+         <View style={s.liveMapLeft}>
+           <View style={s.liveMapIconBox}>
+              <Ionicons name="map" size={20} color={LIME} />
+           </View>
+           <View>
+              <Text style={s.liveMapTitle}>Live Route Map</Text>
+              <Text style={s.liveMapSub}>Track your path in real-time</Text>
+           </View>
+         </View>
+         <View style={s.liveMapGoBtn}>
+           <Text style={s.liveMapGoText}>OPEN</Text>
+           <Ionicons name="chevron-forward" size={14} color="#000" />
+         </View>
       </TouchableOpacity>
+
+      <View style={[s.musicMiniContainer, { marginTop: 'auto' }]} pointerEvents={locked ? "none" : "auto"}>
+        <TouchableOpacity 
+           activeOpacity={0.9} 
+           style={s.progressContainer} 
+           onPress={handleSeek}
+           onLayout={(e) => audioWidthRef.current = e.nativeEvent.layout.width}
+        >
+           <View style={s.progressBg}>
+              <View style={[s.progressFill, { width: `${progressPercent}%` }]} />
+              <View style={[s.progressThumb, { left: `${progressPercent}%` }]} />
+           </View>
+        </TouchableOpacity>
+
+        <View style={s.musicMini}>
+          <TouchableOpacity style={s.musicMiniLeft} onPress={files.length === 0 ? chooseMusic : undefined}>
+             <Ionicons name="musical-note" size={14} color={MUTED} style={{marginTop: 2}}/>
+             <View style={s.musicMiniTextContainer}>
+                <Text numberOfLines={1} style={s.musicMiniTitle}>{files[musicIndex]?.name || "Choose music to play..."}</Text>
+                {files.length > 0 && <Text style={s.musicMiniTime}>{formatAudioTime(songPosition)} / {formatAudioTime(songDuration)}</Text>}
+             </View>
+          </TouchableOpacity>
+          <View style={s.musicControls}>
+            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex - 1)}>
+              <Ionicons name="play-skip-back" size={16} color="#DCE6EF" />
+            </TouchableOpacity>
+            <TouchableOpacity style={s.miniPlay} onPress={toggleMusic}>
+              <Ionicons name={playing ? "pause" : "play"} size={16} color="#000" style={!playing ? { marginLeft: 2 } : {}} />
+            </TouchableOpacity>
+            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex + 1)}>
+              <Ionicons name="play-skip-forward" size={16} color="#DCE6EF" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
     </View>
   );
 
@@ -735,15 +818,25 @@ useEffect(() => {
                  {region ? (
                     <MapView mapType={mapType} customMapStyle={mapDarkStyle} style={StyleSheet.absoluteFill} initialRegion={region} region={region} showsUserLocation>
                         <Polyline coordinates={route} strokeColor={LIME} strokeWidth={4}/>
+                        
+                        {/* LIVE DYNAMIC GHOST ROUTE */}
+                        {ghostRun && ghostDrawnRoute.length > 0 && (
+                           <>
+                              <Polyline coordinates={ghostDrawnRoute} strokeColor="#FF4444" strokeWidth={4} strokeDashPattern={[10, 10]} />
+                              <Marker coordinate={ghostDrawnRoute[ghostDrawnRoute.length - 1]}>
+                                  <Ionicons name="ghost" size={22} color="#FF4444" />
+                              </Marker>
+                           </>
+                        )}
                     </MapView>
-                 ) : ( <Text style={{color: MUTED, textAlign: 'center', marginTop: 50}}>Waiting for GPS...</Text> )}
+                 ) : ( <Text style={{color: MUTED, textAlign: 'center', marginTop: 50}}>{gpsMessage}</Text> )}
                </View>
              </View>
           )}
           
           {tab === "Music" && (
              <View style={{flex: 1}}>
-               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{paddingBottom: 100}}>
+               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{paddingBottom: 120}}>
                  <Text style={s.pageTitle}>Playlist</Text>
                  <TouchableOpacity style={s.addMusic} onPress={chooseMusic} activeOpacity={0.8}>
                      <Text style={{color: '#000', fontWeight: '800', letterSpacing: 0.5}}>ADD MUSIC FILES</Text>
@@ -763,25 +856,40 @@ useEffect(() => {
                  {files.length === 0 && <Text style={{color:MUTED, textAlign:'center', marginTop: 40}}>Your playlist is empty.</Text>}
                </ScrollView>
 
-               {/* Sticky Music Player overlay inside Music Tab */}
+               {/* Floating Player with Seekbar for Music Tab */}
                {files.length > 0 && (
-                  <View style={s.floatingPlayer}>
-                    <View style={{flex: 1, paddingRight: 10}}>
-                       <Ionicons name="musical-note" size={12} color={MUTED} />
-                       <Text numberOfLines={1} style={{color:'#FFF', fontSize:12, fontWeight:'600', marginTop:2}}>
-                         {files[musicIndex]?.name || "Select a track"}
-                       </Text>
-                    </View>
-                    <View style={{flexDirection:'row', alignItems:'center', gap: 15}}>
-                       <TouchableOpacity onPress={() => playMusicAt(musicIndex - 1)}>
-                         <Ionicons name="play-skip-back" size={20} color="#FFF" />
-                       </TouchableOpacity>
-                       <TouchableOpacity style={s.floatingPlayBtn} onPress={toggleMusic}>
-                         <Ionicons name={playing ? "pause" : "play"} size={20} color="#000" style={!playing ? {marginLeft: 2} : {}} />
-                       </TouchableOpacity>
-                       <TouchableOpacity onPress={() => playMusicAt(musicIndex + 1)}>
-                         <Ionicons name="play-skip-forward" size={20} color="#FFF" />
-                       </TouchableOpacity>
+                  <View style={s.floatingPlayerContainer}>
+                    <TouchableOpacity 
+                       activeOpacity={0.9} 
+                       style={s.progressContainer} 
+                       onPress={handleSeek}
+                       onLayout={(e) => audioWidthRef.current = e.nativeEvent.layout.width}
+                    >
+                       <View style={s.progressBg}>
+                          <View style={[s.progressFill, { width: `${progressPercent}%` }]} />
+                          <View style={[s.progressThumb, { left: `${progressPercent}%` }]} />
+                       </View>
+                    </TouchableOpacity>
+
+                    <View style={s.floatingPlayer}>
+                      <View style={{flex: 1, paddingRight: 10}}>
+                         <Ionicons name="musical-note" size={12} color={MUTED} />
+                         <Text numberOfLines={1} style={{color:'#FFF', fontSize:12, fontWeight:'600', marginTop:2}}>
+                           {files[musicIndex]?.name || "Select a track"}
+                         </Text>
+                         <Text style={{color: MUTED, fontSize: 9, marginTop:2}}>{formatAudioTime(songPosition)} / {formatAudioTime(songDuration)}</Text>
+                      </View>
+                      <View style={{flexDirection:'row', alignItems:'center', gap: 15}}>
+                         <TouchableOpacity onPress={() => playMusicAt(musicIndex - 1)}>
+                           <Ionicons name="play-skip-back" size={20} color="#FFF" />
+                         </TouchableOpacity>
+                         <TouchableOpacity style={s.floatingPlayBtn} onPress={toggleMusic}>
+                           <Ionicons name={playing ? "pause" : "play"} size={20} color="#000" style={!playing ? {marginLeft: 2} : {}} />
+                         </TouchableOpacity>
+                         <TouchableOpacity onPress={() => playMusicAt(musicIndex + 1)}>
+                           <Ionicons name="play-skip-forward" size={20} color="#FFF" />
+                         </TouchableOpacity>
+                      </View>
                     </View>
                   </View>
                )}
@@ -802,7 +910,6 @@ useEffect(() => {
           })}
         </View>
 
-        {/* Premium Ghost Race Result Modal */}
         <Modal visible={showGhostResult} transparent animationType="fade">
            <View style={s.ghostResultOverlay}>
               <View style={s.ghostResultCard}>
@@ -853,11 +960,12 @@ export default function App() { return <SafeAreaProvider><AppContent /></SafeAre
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG },
   root: { flex: 1, backgroundColor: BG, justifyContent: "space-between" },
-  mainWrapper: { flex: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 5, justifyContent: "space-between" },
-  runContainer: { flex: 1, justifyContent: "space-between" },
+  mainWrapper: { flex: 1, paddingHorizontal: 14, paddingTop: 5, paddingBottom: 0, justifyContent: "space-between" },
+  
+  runContainer: { flex: 1 }, 
   scrollContent: { paddingBottom: 20 },
 
-  brandRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 15 },
+  brandRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   brandLeft: { flexDirection: "row", alignItems: "center" },
   brandIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#152014", borderWidth: 1, borderColor: "#304221", alignItems: "center", justifyContent: "center" },
   brandText: { marginLeft: 10 },
@@ -867,7 +975,7 @@ const s = StyleSheet.create({
   voiceCommandRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   voiceText: { color: MUTED, fontSize: 11, fontWeight: "600" },
 
-  heroContainer: { flex: 1, maxHeight: 270, marginBottom: 10, borderRadius: 28, overflow: "hidden", elevation: 5, backgroundColor: "#111" },
+  heroContainer: { flex: 1, maxHeight: 270, marginBottom: 15, borderRadius: 28, overflow: "hidden", elevation: 5, backgroundColor: "#111" },
   hero: { flex: 1, padding: 16, justifyContent: "space-between" },
   heroImage: { borderRadius: 28, opacity: 0.6 },
   heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(5, 15, 25, 0.4)' },
@@ -882,7 +990,7 @@ const s = StyleSheet.create({
   statusPill: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 },
   statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: LIME },
   statusText: { color: "#FFFFFF", fontWeight: "800", letterSpacing: 2, fontSize: 10 },
-  timer: { color: "#FFFFFF", fontSize: 56, fontWeight: "900", letterSpacing: -2, fontVariant: ["tabular-nums"], lineHeight: 65 },
+  timer: { color: "#FFFFFF", fontSize: 56, fontWeight: "900", fontVariant: ["tabular-nums"], lineHeight: 65, paddingHorizontal: 10 },
   elapsedLabel: { color: "#92A5B8", fontSize: 10, fontWeight: "700", letterSpacing: 2 },
   
   controlsContainer: { height: 75, justifyContent: "center" },
@@ -911,9 +1019,25 @@ const s = StyleSheet.create({
   metricDot: { width: 5, height: 5, borderRadius: 2.5 },
   metricNote: { color: MUTED, fontSize: 9, fontWeight: "500" },
 
-  musicMini: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 14, borderRadius: 20, borderWidth: 1, borderColor: BORDER, backgroundColor: CARD, gap: 10, justifyContent: 'space-between', marginBottom: 5 },
-  musicMiniLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 8 },
-  musicMiniTitle: { color: "#D1DDE8", fontSize: 12, fontWeight: "600", flexShrink: 1 },
+  liveMapCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#121A23', borderRadius: 20, padding: 12, borderWidth: 1, borderColor: '#1E2A38', shadowColor: "#000", shadowOffset:{width:0, height:4}, shadowOpacity: 0.3, shadowRadius: 10, elevation: 4 },
+  liveMapLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  liveMapIconBox: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#1A2633', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#2A3644' },
+  liveMapTitle: { color: '#FFF', fontSize: 14, fontWeight: '700' },
+  liveMapSub: { color: MUTED, fontSize: 11, fontWeight: '500', marginTop: 2 },
+  liveMapGoBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: LIME, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, gap: 4 },
+  liveMapGoText: { color: '#000', fontWeight: '800', fontSize: 10 },
+
+  musicMiniContainer: { backgroundColor: CARD, borderRadius: 20, borderWidth: 1, borderColor: BORDER, overflow: 'hidden', marginBottom: 10 },
+  progressContainer: { height: 24, justifyContent: 'center', width: '100%', paddingHorizontal: 15, marginTop: 5 },
+  progressBg: { height: 4, backgroundColor: '#1E2A38', borderRadius: 2, width: '100%', flexDirection: 'row', alignItems: 'center' },
+  progressFill: { height: '100%', backgroundColor: LIME, borderRadius: 2 },
+  progressThumb: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#FFF', position: 'absolute', marginLeft: -6 },
+  
+  musicMini: { flexDirection: "row", alignItems: "center", paddingBottom: 10, paddingHorizontal: 14, gap: 10, justifyContent: 'space-between' },
+  musicMiniLeft: { flexDirection: 'row', alignItems: 'flex-start', flex: 1, gap: 8, paddingRight: 10 }, 
+  musicMiniTextContainer: { flex: 1 }, 
+  musicMiniTitle: { color: "#D1DDE8", fontSize: 12, fontWeight: "600" }, 
+  musicMiniTime: { color: MUTED, fontSize: 9, marginTop: 2 },
   musicControls: { flexDirection: "row", alignItems: "center", gap: 12 },
   miniPlay: { width: 32, height: 32, borderRadius: 16, backgroundColor: LIME, alignItems: "center", justifyContent: "center" },
 
@@ -935,7 +1059,9 @@ const s = StyleSheet.create({
   historyValue: { color: "#FFF", fontSize: 26, fontWeight: "800", letterSpacing: -1 },
   
   musicCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 22, borderWidth: 1, borderColor: BORDER, marginBottom: 12, shadowColor: "#000", shadowOffset:{width:0, height:4}, shadowOpacity: 0.2, shadowRadius: 10, elevation: 4 },
-  floatingPlayer: { position: 'absolute', bottom: 10, left: 10, right: 10, backgroundColor: '#1A2633', borderRadius: 24, paddingVertical: 12, paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', elevation: 10, borderWidth: 1, borderColor: BORDER },
+  
+  floatingPlayerContainer: { position: 'absolute', bottom: 10, left: 10, right: 10, backgroundColor: '#1A2633', borderRadius: 24, elevation: 10, borderWidth: 1, borderColor: BORDER, overflow: 'hidden' },
+  floatingPlayer: { paddingBottom: 10, paddingTop: 4, paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   floatingPlayBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: LIME, alignItems: 'center', justifyContent: 'center' },
 
   graphContainer: { backgroundColor: CARD, borderRadius: 22, padding: 22, borderWidth: 1, borderColor: BORDER, marginBottom: 20, shadowColor: "#000", shadowOffset:{width:0, height:4}, shadowOpacity: 0.2, shadowRadius: 10, elevation: 4 },
