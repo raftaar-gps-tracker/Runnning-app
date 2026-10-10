@@ -211,10 +211,13 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    // AUDIO NOTIFICATION FIX
+    // Force Android to show the notification and keep it alive
     Audio.setAudioModeAsync({
       staysActiveInBackground: true,
-      shouldDuckAndroid: false,
+      shouldDuckAndroid: false, // Don't duck so no delays in voice
       playThroughEarpieceAndroid: false,
+      interruptionModeAndroid: Audio.INTERRUPTION_MODE_ANDROID_DO_NOT_MIX, // Force notification controls on some android versions
     }).catch(console.warn);
   }, []);
 
