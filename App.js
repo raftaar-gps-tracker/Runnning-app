@@ -15,7 +15,7 @@ import {
 import * as Location from "expo-location";
 import { Magnetometer } from "expo-sensors";
 import * as DocumentPicker from "expo-document-picker";
-import { Audio } from "expo-av";
+import TrackPlayer, { State, Capability, Event, usePlaybackState, useProgress, useTrackPlayerEvents } from 'react-native-track-player';
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import MapView, { Marker, Polyline } from "react-native-maps";
 import {
@@ -73,9 +73,10 @@ const paceText = (seconds, km) => {
   return `${String(Math.floor(p / 60)).padStart(2, "0")}:${String(p % 60).padStart(2, "0")}`;
 };
 
-const formatAudioTime = (millis) => {
-  if (!millis) return "0:00";
-  const totalSeconds = Math.floor(millis / 1000);
+// Use seconds directly for TrackPlayer
+const formatAudioTime = (seconds) => {
+  if (!seconds) return "0:00";
+  const totalSeconds = Math.floor(seconds);
   const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
@@ -156,11 +157,6 @@ function AppContent() {
   const [locked, setLocked] = useState(false);
   const [files, setFiles] = useState([]);
   const [musicIndex, setMusicIndex] = useState(-1);
-  const [playing, setPlaying] = useState(false);
-  
-  const [songPosition, setSongPosition] = useState(0);
-  const [songDuration, setSongDuration] = useState(1);
-
   const [busy, setBusy] = useState(false);
   const [region, setRegion] = useState(null);
   const [mapType, setMapType] = useState("standard");
@@ -173,6 +169,11 @@ function AppContent() {
   const [showGhostResult, setShowGhostResult] = useState(false);
   const [ghostStats, setGhostStats] = useState(null);
 
+  // TrackPlayer Hooks
+  const playbackState = usePlaybackState();
+  const { position: songPosition, duration: songDuration } = useProgress(500);
+  const playing = playbackState === State.Playing || playbackState?.state === State.Playing;
+
   const watch = useRef(null);
   const lastPoint = useRef(null);
   const startAt = useRef(null);
@@ -181,41 +182,28 @@ function AppContent() {
   const distanceRef = useRef(0);
   const routeRef = useRef([]);
   const statusRef = useRef("ready");
-  const soundRef = useRef(null);
   const topSpeedRef = useRef(0);
   const lastMilestoneRef = useRef(0);
   const audioWidthRef = useRef(0); 
 
+  // TrackPlayer Events Setup
+  useTrackPlayerEvents([Event.PlaybackTrackChanged], async (event) => {
+    if (event.nextTrack !== undefined && event.nextTrack !== null) {
+        setMusicIndex(event.nextTrack);
+    }
+  });
+
   useEffect(() => {
     (async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        setGpsMessage("Permission denied");
-        return;
-      }
+      if (status !== 'granted') { setGpsMessage("Permission denied"); return; }
       try {
         let location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        setRegion({
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          latitudeDelta: 0.005,
-          longitudeDelta: 0.005,
-        });
+        setRegion({ latitude: location.coords.latitude, longitude: location.coords.longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 });
         setAccuracy(location.coords.accuracy);
         setGpsMessage("GPS connected");
-      } catch (error) {
-        setGpsMessage("Searching GPS...");
-      }
+      } catch (error) { setGpsMessage("Searching GPS..."); }
     })();
-  }, []);
-
-  useEffect(() => {
-    // AUDIO DELAY FIX: shouldDuckAndroid: false prevents the OS from pausing/stuttering audio streams
-    Audio.setAudioModeAsync({
-      staysActiveInBackground: true,
-      shouldDuckAndroid: false, 
-      playThroughEarpieceAndroid: false,
-    }).catch(console.warn);
   }, []);
 
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -225,13 +213,30 @@ function AppContent() {
 
   useEffect(() => {
     AsyncStorage.getItem(HISTORY_KEY).then(raw => { if (raw) setHistory(JSON.parse(raw)); }).catch(() => {});
-    AsyncStorage.getItem(MUSIC_KEY).then(raw => { 
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setFiles(parsed);
-        if (parsed.length > 0 && musicIndex < 0) setMusicIndex(0);
-      } 
-    }).catch(() => {});
+    
+    // INITIALIZE TRACK PLAYER
+    async function initMusic() {
+      try {
+        await TrackPlayer.setupPlayer();
+        await TrackPlayer.updateOptions({
+            capabilities: [ Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious, Capability.SeekTo ],
+            compactCapabilities: [ Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious ],
+            notificationCapabilities: [ Capability.Play, Capability.Pause, Capability.SkipToNext, Capability.SkipToPrevious ]
+        });
+
+        const raw = await AsyncStorage.getItem(MUSIC_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            setFiles(parsed);
+            if (parsed.length > 0) {
+               setMusicIndex(0);
+               const tracks = parsed.map(f => ({ id: f.uri, url: f.uri, title: f.name, artist: "Raftaar Playlist" }));
+               await TrackPlayer.add(tracks);
+            }
+        }
+      } catch (e) { console.log("TrackPlayer setup issue:", e); }
+    }
+    initMusic();
   }, []);
 
   useEffect(() => {
@@ -249,9 +254,7 @@ function AppContent() {
              const dt = (ghostRun.route[i].timestamp - firstTime) / 1000;
              if (dt <= currentElapsed) {
                  currentGhostPath.push(ghostRun.route[i]);
-                 if (i > 0) {
-                     gDist += haversine(ghostRun.route[i-1], ghostRun.route[i]) / 1000;
-                 }
+                 if (i > 0) gDist += haversine(ghostRun.route[i-1], ghostRun.route[i]) / 1000;
              } else break;
           }
           setGhostDistance(gDist);
@@ -262,14 +265,18 @@ function AppContent() {
     return () => clearInterval(timer);
   }, [status, ghostRun]);
 
-  // VOICE DELAY & PROFESSIONALISM UPDATE
-  const speak = (message) => {
+  // VOICE COMMAND DUCKING FIX (Lower volume instantly, speak, then restore)
+  const speak = async (message) => {
     if (voiceCommand) {
       try { 
         Speech.stop(); 
+        if (playing) await TrackPlayer.setVolume(0.2); 
         Speech.speak(message, { 
             rate: 1.0, 
-            language: 'en-US' // Forces local engine for zero delay
+            language: 'en-US',
+            onDone: () => TrackPlayer.setVolume(1.0),
+            onStopped: () => TrackPlayer.setVolume(1.0),
+            onError: () => TrackPlayer.setVolume(1.0)
         }); 
       } catch (e) {}
     }
@@ -294,7 +301,6 @@ function AppContent() {
     setGpsMessage(c.accuracy == null ? "GPS signal locked." : c.accuracy <= 15 ? "GPS signal optimal." : "GPS signal locked.");
 
     if (statusRef.current !== "running") return;
-
     if (c.accuracy != null && c.accuracy > 25) return;
 
     const previous = lastPoint.current;
@@ -390,7 +396,6 @@ function AppContent() {
     if (status === "ready") { resetRun(); return; }
     
     await stopWatch();
-    
     const avgSpd = elapsedRef.current > 0 ? (distanceRef.current / (elapsedRef.current / 3600)) : 0;
     const finalDist = distanceRef.current;
     const finalDur = elapsedRef.current;
@@ -435,10 +440,18 @@ function AppContent() {
       if (result.canceled) return;
       const chosen = result.assets || [];
       if (!chosen.length) return;
+      
       setFiles(old => {
         const seen = new Set(old.map(f => f.uri));
-        const updated = [...old, ...chosen.filter(f => !seen.has(f.uri))];
+        const newFiles = chosen.filter(f => !seen.has(f.uri));
+        const updated = [...old, ...newFiles];
         AsyncStorage.setItem(MUSIC_KEY, JSON.stringify(updated)).catch(()=>{});
+        
+        // Add to TrackPlayer Queue
+        if(newFiles.length > 0) {
+           const tracks = newFiles.map(f => ({ id: f.uri, url: f.uri, title: f.name, artist: "Raftaar" }));
+           TrackPlayer.add(tracks);
+        }
         return updated;
       });
       if (musicIndex < 0) setMusicIndex(0);
@@ -449,18 +462,18 @@ function AppContent() {
     Alert.alert("Remove Track?", "Are you sure you want to remove this song?", [
       { text: "Cancel", style: "cancel" },
       { text: "Remove", style: "destructive", onPress: async () => {
-          if (index === musicIndex && soundRef.current) {
-            await soundRef.current.unloadAsync();
-            soundRef.current = null;
-            setPlaying(false);
-            setMusicIndex(-1);
-            setSongPosition(0);
+          const updatedFiles = files.filter((_, i) => i !== index);
+          setFiles(updatedFiles);
+          await AsyncStorage.setItem(MUSIC_KEY, JSON.stringify(updatedFiles));
+          
+          await TrackPlayer.reset();
+          if(updatedFiles.length > 0) {
+              const tracks = updatedFiles.map(f => ({ id: f.uri, url: f.uri, title: f.name, artist: "Raftaar" }));
+              await TrackPlayer.add(tracks);
+              setMusicIndex(0);
+          } else {
+              setMusicIndex(-1);
           }
-          setFiles(old => {
-            const updated = old.filter((_, i) => i !== index);
-            AsyncStorage.setItem(MUSIC_KEY, JSON.stringify(updated)).catch(()=>{});
-            return updated;
-          });
       }}
     ]);
   };
@@ -468,60 +481,27 @@ function AppContent() {
   const playMusicAt = async (index) => {
     if (!files.length) return;
     const i = (index + files.length) % files.length;
-    const item = files[i];
-    if (!item?.uri) return;
-
     try {
-      if (soundRef.current) {
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
-      }
-      const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: item.uri },
-        { shouldPlay: true, progressUpdateIntervalMillis: 500 }
-      );
-      soundRef.current = newSound;
-      setMusicIndex(i);
-      setPlaying(true);
-      
-      newSound.setOnPlaybackStatusUpdate(status => {
-        if (status.isLoaded) {
-            setSongPosition(status.positionMillis || 0);
-            setSongDuration(status.durationMillis || 1);
-            if (status.didJustFinish) {
-                playMusicAt(i + 1);
-            }
-        }
-      });
-    } catch (e) {
-      console.log(e);
-      Alert.alert("Playback error", "Could not play this audio file.");
-    }
+      await TrackPlayer.skip(i);
+      await TrackPlayer.play();
+    } catch (e) { console.log(e); }
   };
 
   const toggleMusic = async () => {
     if (!files.length) { chooseMusic(); return; }
-    if (!soundRef.current) { 
-        playMusicAt(musicIndex < 0 ? 0 : musicIndex);
-        return; 
-    }
     try {
-      const st = await soundRef.current.getStatusAsync();
-      if (st.isLoaded && st.isPlaying) { await soundRef.current.pauseAsync(); setPlaying(false); } 
-      else if (st.isLoaded) { await soundRef.current.playAsync(); setPlaying(true); }
-    } catch (_) { setPlaying(false); }
+      if (playing) await TrackPlayer.pause(); 
+      else await TrackPlayer.play();
+    } catch (_) {}
   };
 
   const handleSeek = async (evt) => {
-    if (locked) return; // Add extra protection for seekbar if locked
-    if (!soundRef.current || songDuration <= 1) return;
+    if (locked || songDuration <= 1) return;
     const touchX = evt.nativeEvent.locationX;
     const width = audioWidthRef.current || Dimensions.get('window').width - 30; 
     const percentage = Math.max(0, Math.min(1, touchX / width));
     const seekTo = percentage * songDuration;
-    
-    setSongPosition(seekTo);
-    await soundRef.current.setPositionAsync(seekTo);
+    await TrackPlayer.seekTo(seekTo);
   };
 
   const deleteHistory = id => {
@@ -555,30 +535,31 @@ function AppContent() {
   const liveSpeed = speed > 0.3 ? speed.toFixed(1) : "0.0";
   const livePace = speed > 0.3 ? paceText(3600, speed) : "--:--";
   const maxGraphDist = Math.max(...history.slice(0, 7).map(h => h.distance), 1);
-  const progressPercent = Math.min(100, (songPosition / songDuration) * 100);
+  const progressPercent = songDuration > 0 ? Math.min(100, (songPosition / songDuration) * 100) : 0;
 
   const renderRun = () => (
     <View style={s.runContainer}>
-      <View style={s.brandRow}>
-        <View style={s.brandLeft}>
-          <View style={s.brandIcon}><Ionicons name="flash" size={20} color={LIME} /></View>
-          <View style={s.brandText}>
-            <Text style={s.brandTitle}>Raftaar</Text>
-            <Text style={s.brandSubtitle}>Run, Your Way.</Text>
+      {/* 100% LOCK SCREEN FIX applied using pointerEvents wrapper */}
+      <View pointerEvents={locked ? "none" : "auto"}>
+        <View style={s.brandRow}>
+          <View style={s.brandLeft}>
+            <View style={s.brandIcon}><Ionicons name="flash" size={20} color={LIME} /></View>
+            <View style={s.brandText}>
+              <Text style={s.brandTitle}>Raftaar</Text>
+              <Text style={s.brandSubtitle}>Run, Your Way.</Text>
+            </View>
           </View>
-        </View>
-        
-        <View style={s.voiceCommandRow}>
-          <Text style={s.voiceText}>Voice Command</Text>
-          {/* LOCK FIX: Added disabled={locked} */}
-          <Switch 
-            value={voiceCommand} 
-            onValueChange={handleVoiceToggle} 
-            trackColor={{ false: "#2A3644", true: LIME }} 
-            thumbColor="#FFFFFF" 
-            style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
-            disabled={locked}
-          />
+          
+          <View style={s.voiceCommandRow}>
+            <Text style={s.voiceText}>Voice Command</Text>
+            <Switch 
+              value={voiceCommand} 
+              onValueChange={handleVoiceToggle} 
+              trackColor={{ false: "#2A3644", true: LIME }} 
+              thumbColor="#FFFFFF" 
+              style={{ transform: [{ scaleX: 0.85 }, { scaleY: 0.85 }] }}
+            />
+          </View>
         </View>
       </View>
 
@@ -648,31 +629,30 @@ function AppContent() {
         <Metric icon="flame" label="CALORIES" value={String(Math.round(distance * 60))} unit="kcal" note="Burning energy" iconBg="#EF4444" iconColor="#FFF" dotColor="#EF4444" />
       </View>
 
-      {/* LOCK FIX: Added disabled={locked} */}
-      <TouchableOpacity style={[s.liveMapCard, locked && { opacity: 0.6 }]} onPress={() => setTab("Map")} activeOpacity={0.8} disabled={locked}>
-         <View style={s.liveMapLeft}>
-           <View style={s.liveMapIconBox}>
-              <Ionicons name="map" size={20} color={LIME} />
+      <View pointerEvents={locked ? "none" : "auto"}>
+        <TouchableOpacity style={[s.liveMapCard, locked && { opacity: 0.6 }]} onPress={() => setTab("Map")} activeOpacity={0.8}>
+           <View style={s.liveMapLeft}>
+             <View style={s.liveMapIconBox}>
+                <Ionicons name="map" size={20} color={LIME} />
+             </View>
+             <View>
+                <Text style={s.liveMapTitle}>Live Route Map</Text>
+                <Text style={s.liveMapSub}>Track your path in real-time</Text>
+             </View>
            </View>
-           <View>
-              <Text style={s.liveMapTitle}>Live Route Map</Text>
-              <Text style={s.liveMapSub}>Track your path in real-time</Text>
+           <View style={s.liveMapGoBtn}>
+             <Text style={s.liveMapGoText}>OPEN</Text>
+             <Ionicons name="chevron-forward" size={14} color="#000" />
            </View>
-         </View>
-         <View style={s.liveMapGoBtn}>
-           <Text style={s.liveMapGoText}>OPEN</Text>
-           <Ionicons name="chevron-forward" size={14} color="#000" />
-         </View>
-      </TouchableOpacity>
+        </TouchableOpacity>
+      </View>
 
-      {/* LOCK FIX for Music Controls */}
-      <View style={[s.musicMiniContainer, { marginTop: 'auto' }, locked && { opacity: 0.6 }]}>
+      <View style={[s.musicMiniContainer, { marginTop: 'auto' }, locked && { opacity: 0.6 }]} pointerEvents={locked ? "none" : "auto"}>
         <TouchableOpacity 
            activeOpacity={0.9} 
            style={s.progressContainer} 
            onPress={handleSeek}
            onLayout={(e) => audioWidthRef.current = e.nativeEvent.layout.width}
-           disabled={locked}
         >
            <View style={s.progressBg}>
               <View style={[s.progressFill, { width: `${progressPercent}%` }]} />
@@ -681,7 +661,7 @@ function AppContent() {
         </TouchableOpacity>
 
         <View style={s.musicMini}>
-          <TouchableOpacity style={s.musicMiniLeft} onPress={files.length === 0 ? chooseMusic : undefined} disabled={locked}>
+          <TouchableOpacity style={s.musicMiniLeft} onPress={files.length === 0 ? chooseMusic : undefined}>
              <Ionicons name="musical-note" size={14} color={MUTED} style={{marginTop: 2}}/>
              <View style={s.musicMiniTextContainer}>
                 <Text numberOfLines={1} style={s.musicMiniTitle}>{files[musicIndex]?.name || "Choose music to play..."}</Text>
@@ -689,13 +669,13 @@ function AppContent() {
              </View>
           </TouchableOpacity>
           <View style={s.musicControls}>
-            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex - 1)} disabled={locked}>
+            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex - 1)}>
               <Ionicons name="play-skip-back" size={16} color="#DCE6EF" />
             </TouchableOpacity>
-            <TouchableOpacity style={s.miniPlay} onPress={toggleMusic} disabled={locked}>
+            <TouchableOpacity style={s.miniPlay} onPress={toggleMusic}>
               <Ionicons name={playing ? "pause" : "play"} size={16} color="#000" style={!playing ? { marginLeft: 2 } : {}} />
             </TouchableOpacity>
-            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex + 1)} disabled={locked}>
+            <TouchableOpacity style={s.miniControl} onPress={() => playMusicAt(musicIndex + 1)}>
               <Ionicons name="play-skip-forward" size={16} color="#DCE6EF" />
             </TouchableOpacity>
           </View>
@@ -966,6 +946,17 @@ function AppContent() {
 }
 
 export default function App() { return <SafeAreaProvider><AppContent /></SafeAreaProvider>; }
+
+// OS MEDIA CONTROLS SETUP
+try {
+  TrackPlayer.registerPlaybackService(() => async () => {
+    TrackPlayer.addEventListener('remote-play', () => TrackPlayer.play());
+    TrackPlayer.addEventListener('remote-pause', () => TrackPlayer.pause());
+    TrackPlayer.addEventListener('remote-next', () => TrackPlayer.skipToNext());
+    TrackPlayer.addEventListener('remote-previous', () => TrackPlayer.skipToPrevious());
+    TrackPlayer.addEventListener('remote-seek', ({position}) => TrackPlayer.seekTo(position));
+  });
+} catch (e) {}
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: BG },
