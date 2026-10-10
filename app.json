@@ -53,6 +53,12 @@
           "microphonePermission": "Allow Raftaar to access your microphone."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "70bf787f-6be1-451e-b2bd-e57499ae8d8b"
+      }
+    },
+    "owner": "raftaar-gps-trackers-team"
   }
 }
