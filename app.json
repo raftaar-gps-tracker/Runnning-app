@@ -35,8 +35,7 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "WAKE_LOCK",
-        "READ_EXTERNAL_STORAGE",
-        "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "READ_EXTERNAL_STORAGE"
       ],
       "package": "com.raftaar.tracker"
     },
