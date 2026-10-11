@@ -10,7 +10,12 @@ import {
   View,
   Switch,
   ImageBackground,
-  Modal
+  Modal,
+  Image,
+  Linking,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform
 } from "react-native";
 import * as Location from "expo-location";
 import { Magnetometer } from "expo-sensors";
@@ -25,6 +30,11 @@ import {
 } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Speech from "expo-speech";
+import * as Sharing from 'expo-sharing';
+import { Camera, CameraView } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
+import ViewShot, { captureRef } from 'react-native-view-shot';
+import Svg, { Polyline as SvgPolyline } from 'react-native-svg';
 
 const LIME = "#C6FF35";
 const BG = "#091016";
@@ -33,6 +43,7 @@ const MUTED = "#738496";
 const BORDER = "#1E2A38";
 const HISTORY_KEY = "@raftaar_run_history_v2";
 const MUSIC_KEY = "@raftaar_music_v2";
+const BMI_KEY = "@raftaar_bmi_profile";
 
 const mapDarkStyle = [
   { "elementType": "geometry", "stylers": [{ "color": "#242f3e" }] },
@@ -79,6 +90,26 @@ const formatAudioTime = (millis) => {
   const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+};
+
+const getSvgPoints = (route, width, height) => {
+  if (!route || route.length < 2) return "";
+  const lats = route.map(p => p.latitude);
+  const lons = route.map(p => p.longitude);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+
+  const latDiff = maxLat - minLat || 0.0001;
+  const lonDiff = maxLon - minLon || 0.0001;
+  const pad = 15; 
+
+  return route.map(p => {
+      const x = pad + ((p.longitude - minLon) / lonDiff) * (width - 2*pad);
+      const y = pad + ((maxLat - p.latitude) / latDiff) * (height - 2*pad);
+      return `${x},${y}`;
+  }).join(' ');
 };
 
 function Action({ icon, label, color = "#B0BEC5", onPress, disabled }) {
@@ -173,6 +204,20 @@ function AppContent() {
   const [showGhostResult, setShowGhostResult] = useState(false);
   const [ghostStats, setGhostStats] = useState(null);
 
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [shareBgImage, setShareBgImage] = useState(null);
+  const [showCamera, setShowCamera] = useState(false);
+  const [showRouteMap, setShowRouteMap] = useState(true);
+  const [showVignette, setShowVignette] = useState(true);
+
+  const [showAllHistory, setShowAllHistory] = useState(false);
+  const [showBmiModal, setShowBmiModal] = useState(false);
+  const [bmiData, setBmiData] = useState({ height: '', weight: '', gender: 'Male' });
+  const [savedBmi, setSavedBmi] = useState(null);
+
+  const viewShotRef = useRef(null);
+  const cameraRef = useRef(null);
+
   const watch = useRef(null);
   const lastPoint = useRef(null);
   const startAt = useRef(null);
@@ -210,7 +255,6 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    // AUDIO DELAY FIX: shouldDuckAndroid: false prevents the OS from pausing/stuttering audio streams
     Audio.setAudioModeAsync({
       staysActiveInBackground: true,
       shouldDuckAndroid: false, 
@@ -231,6 +275,13 @@ function AppContent() {
         setFiles(parsed);
         if (parsed.length > 0 && musicIndex < 0) setMusicIndex(0);
       } 
+    }).catch(() => {});
+    AsyncStorage.getItem(BMI_KEY).then(raw => {
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setSavedBmi(parsed);
+        setBmiData({ height: parsed.height, weight: parsed.weight, gender: parsed.gender });
+      }
     }).catch(() => {});
   }, []);
 
@@ -262,14 +313,13 @@ function AppContent() {
     return () => clearInterval(timer);
   }, [status, ghostRun]);
 
-  // VOICE DELAY & PROFESSIONALISM UPDATE
   const speak = (message) => {
     if (voiceCommand) {
       try { 
         Speech.stop(); 
         Speech.speak(message, { 
             rate: 1.0, 
-            language: 'en-US' // Forces local engine for zero delay
+            language: 'en-US' 
         }); 
       } catch (e) {}
     }
@@ -426,7 +476,7 @@ function AppContent() {
     }
     
     await resetRun(); 
-    if(!ghostRun) setTab("History");
+    if(!ghostRun) setTab("Stats");
   };
 
   const chooseMusic = async () => {
@@ -513,7 +563,7 @@ function AppContent() {
   };
 
   const handleSeek = async (evt) => {
-    if (locked) return; // Add extra protection for seekbar if locked
+    if (locked) return;
     if (!soundRef.current || songDuration <= 1) return;
     const touchX = evt.nativeEvent.locationX;
     const width = audioWidthRef.current || Dimensions.get('window').width - 30; 
@@ -552,10 +602,126 @@ function AppContent() {
     }, 100);
   };
 
+  const openYTMusic = async () => {
+    const ytMusicUrl = 'https://music.youtube.com/';
+    const supported = await Linking.canOpenURL(ytMusicUrl);
+    if (supported) {
+      await Linking.openURL(ytMusicUrl);
+    } else {
+      await Linking.openURL('https://music.youtube.com/');
+    }
+  };
+
+  const handleShareClick = () => {
+    setDefaultPhoto();
+    setShowRouteMap(true);
+    setShowVignette(true);
+    setShowShareModal(true);
+  };
+
+  const setDefaultPhoto = () => {
+    const defaultImages = [
+      'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?q=80&w=800&auto=format&fit=crop', 
+      'https://images.unsplash.com/photo-1426604966848-d7adac402bff?q=80&w=800&auto=format&fit=crop', 
+      'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=800&auto=format&fit=crop',
+      'https://images.unsplash.com/photo-1511497584788-876760111969?q=80&w=800&auto=format&fit=crop'
+    ];
+    const randomImage = defaultImages[Math.floor(Math.random() * defaultImages.length)];
+    setShareBgImage(randomImage);
+  };
+
+  const openSelfieCamera = async () => {
+    const { status } = await Camera.requestCameraPermissionsAsync();
+    if (status === 'granted') {
+      setShowCamera(true);
+    } else {
+      Alert.alert("Camera permission denied.");
+    }
+  };
+
+  const takeSelfie = async () => {
+      if(cameraRef.current) {
+          const photo = await cameraRef.current.takePictureAsync();
+          setShareBgImage(photo.uri);
+          setShowCamera(false);
+      }
+  };
+
+  const shareResult = async () => {
+    try {
+      const uri = await captureRef(viewShotRef, {
+        format: "png",
+        quality: 1.0
+      });
+      await Sharing.shareAsync(uri);
+    } catch (e) {
+      Alert.alert("Error sharing result.");
+    }
+  };
+
+  const calculateBMI = async () => {
+    if (!bmiData.height || !bmiData.weight) {
+      Alert.alert("Incomplete Data", "Height aur Weight dono enter karein.");
+      return;
+    }
+    const h = parseFloat(bmiData.height) / 100;
+    const w = parseFloat(bmiData.weight);
+    if (h <= 0 || w <= 0) return;
+    
+    const bmiVal = (w / (h * h)).toFixed(1);
+    let cat = "";
+    let sug = "";
+
+    if (bmiVal < 18.5) {
+      cat = "Underweight";
+      sug = "Aapka weight thoda kam hai. Protein-rich diet lein aur muscle building pe focus karein.";
+    } else if (bmiVal >= 18.5 && bmiVal <= 24.9) {
+      cat = "Normal";
+      sug = "Perfect BMI! Apni current running aur fitness routine ko isi tarah maintain karein. Keep it up!";
+    } else if (bmiVal >= 25 && bmiVal <= 29.9) {
+      cat = "Overweight";
+      sug = "Thoda weight zyada hai. Apni runs ko thoda lamba karein aur mild calorie deficit try karein.";
+    } else {
+      cat = "Obese";
+      sug = "High health risk. Diet pe control karein aur consistency ke sath daily walking/running karein.";
+    }
+
+    const payload = { ...bmiData, bmi: bmiVal, category: cat, suggestion: sug };
+    setSavedBmi(payload);
+    await AsyncStorage.setItem(BMI_KEY, JSON.stringify(payload));
+    setShowBmiModal(false);
+  };
+
   const liveSpeed = speed > 0.3 ? speed.toFixed(1) : "0.0";
   const livePace = speed > 0.3 ? paceText(3600, speed) : "--:--";
   const maxGraphDist = Math.max(...history.slice(0, 7).map(h => h.distance), 1);
   const progressPercent = Math.min(100, (songPosition / songDuration) * 100);
+
+  const totalDistance = history.reduce((acc, curr) => acc + curr.distance, 0);
+  const totalDuration = history.reduce((acc, curr) => acc + curr.duration, 0);
+  const topRuns = [...history].sort((a, b) => b.distance - a.distance);
+  const bestRun = topRuns.length > 0 ? topRuns[0] : null;
+
+  // New Compact Render Function for Lists
+  const renderCompactRun = (item, isTop = false, rank = 0, isLast = false) => (
+    <TouchableOpacity key={`${isTop ? 'top' : 'rec'}-${item.id}`} style={[s.compactRunRow, isLast && {borderBottomWidth: 0}]} onPress={() => { setShowAllHistory(false); setSelectedRun(item); }} activeOpacity={0.8}>
+       <View style={{flexDirection: 'row', alignItems: 'center'}}>
+         {isTop ? (
+           <Text style={{color: rank === 1 ? '#FFD700' : rank === 2 ? '#C0C0C0' : '#CD7F32', fontWeight: '900', fontSize: 14, width: 22}}>{rank}</Text>
+         ) : (
+           <View style={{width: 6, height: 6, borderRadius: 3, backgroundColor: LIME, marginRight: 12}} />
+         )}
+         <View>
+           <Text style={{color: '#FFF', fontSize: 16, fontWeight: '800'}}>{item.distance.toFixed(2)} <Text style={{color: MUTED, fontSize: 11}}>km</Text></Text>
+           <Text style={{color: MUTED, fontSize: 10, marginTop: 2}}>{new Date(item.date).toLocaleDateString()}</Text>
+         </View>
+       </View>
+       <View style={{alignItems: 'flex-end'}}>
+         <Text style={{color: '#FFF', fontSize: 14, fontWeight: '700'}}>{timeText(item.duration)}</Text>
+         <Text style={{color: LIME, fontSize: 10, fontWeight: '600', marginTop: 2}}>{item.pace} /km</Text>
+       </View>
+    </TouchableOpacity>
+  );
 
   const renderRun = () => (
     <View style={s.runContainer}>
@@ -570,7 +736,6 @@ function AppContent() {
         
         <View style={s.voiceCommandRow}>
           <Text style={s.voiceText}>Voice Command</Text>
-          {/* LOCK FIX: Added disabled={locked} */}
           <Switch 
             value={voiceCommand} 
             onValueChange={handleVoiceToggle} 
@@ -648,7 +813,6 @@ function AppContent() {
         <Metric icon="flame" label="CALORIES" value={String(Math.round(distance * 60))} unit="kcal" note="Burning energy" iconBg="#EF4444" iconColor="#FFF" dotColor="#EF4444" />
       </View>
 
-      {/* LOCK FIX: Added disabled={locked} */}
       <TouchableOpacity style={[s.liveMapCard, locked && { opacity: 0.6 }]} onPress={() => setTab("Map")} activeOpacity={0.8} disabled={locked}>
          <View style={s.liveMapLeft}>
            <View style={s.liveMapIconBox}>
@@ -665,7 +829,6 @@ function AppContent() {
          </View>
       </TouchableOpacity>
 
-      {/* LOCK FIX for Music Controls */}
       <View style={[s.musicMiniContainer, { marginTop: 'auto' }, locked && { opacity: 0.6 }]}>
         <TouchableOpacity 
            activeOpacity={0.9} 
@@ -712,9 +875,15 @@ function AppContent() {
                <Ionicons name="chevron-back" size={24} color="#FFF" />
                <Text style={{color:'#FFF', fontSize: 16, fontWeight:'600'}}>Back</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => deleteHistory(selectedRun.id)}>
-               <Ionicons name="trash-outline" size={22} color="#FF4444" />
-            </TouchableOpacity>
+            
+            <View style={{flexDirection: 'row', alignItems: 'center', gap: 18}}>
+               <TouchableOpacity onPress={handleShareClick}>
+                  <Ionicons name="share-social" size={22} color={LIME} />
+               </TouchableOpacity>
+               <TouchableOpacity onPress={() => deleteHistory(selectedRun.id)}>
+                  <Ionicons name="trash-outline" size={22} color="#FF4444" />
+               </TouchableOpacity>
+            </View>
          </View>
          
          <View style={s.detailsMapWrapper}>
@@ -752,6 +921,123 @@ function AppContent() {
                <Text style={s.ghostBtnText}>RACE THIS GHOST</Text>
             </TouchableOpacity>
          </ScrollView>
+
+         <Modal visible={showShareModal} animationType="slide" transparent>
+            <View style={{flex: 1, backgroundColor: BG, paddingTop: 40}}>
+               <View style={{flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingBottom: 15}}>
+                  <Text style={{color: '#FFF', fontSize: 20, fontWeight: 'bold'}}>Share Activity</Text>
+                  <TouchableOpacity onPress={() => setShowShareModal(false)}>
+                      <Ionicons name="close" size={28} color="#FFF"/>
+                  </TouchableOpacity>
+               </View>
+
+               {showCamera ? (
+                  <View style={{flex: 1}}>
+                      <CameraView style={{flex: 1}} facing="front" ref={cameraRef}>
+                         <View style={{flex:1, justifyContent:'flex-end', alignItems:'center', paddingBottom: 40}}>
+                            <TouchableOpacity onPress={takeSelfie} style={{width: 70, height: 70, borderRadius: 35, backgroundColor: 'rgba(255,255,255,0.5)', borderWidth: 5, borderColor: '#FFF'}}/>
+                         </View>
+                      </CameraView>
+                  </View>
+               ) : (
+                  <View style={{flex: 1, padding: 10}}>
+                     <ViewShot ref={viewShotRef} options={{ format: "png", quality: 1.0 }} style={{borderRadius: 20, overflow: 'hidden', flex: 1, backgroundColor: '#000'}}>
+                        <ImageBackground source={{uri: shareBgImage}} style={{flex: 1}} resizeMode="cover">
+                           
+                           {showVignette && <View style={[StyleSheet.absoluteFillObject, { backgroundColor: 'rgba(0,0,0,0.35)' }]} />}
+
+                           <View style={{position: 'absolute', top: 35, left: 25}}>
+                              <Text style={{color: '#FFF', fontSize: 24, fontWeight: '900', fontStyle: 'italic', letterSpacing: 1, paddingRight: 10}}>
+                                 RAFTAAR
+                              </Text>
+                              <View style={{flexDirection: 'row', alignItems: 'center', marginTop: 4}}>
+                                  <Ionicons name="calendar-outline" size={10} color={LIME} style={{marginRight: 4}} />
+                                  <Text style={{color: '#FFF', fontSize: 10, fontWeight: '600', textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: {width: 0, height: 1}, textShadowRadius: 2}}>
+                                     {new Date(selectedRun.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })} at {new Date(selectedRun.date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                                  </Text>
+                              </View>
+                           </View>
+
+                           <View style={{position: 'absolute', bottom: 40, right: 25, alignItems: 'flex-end'}}>
+                              
+                              {showRouteMap && selectedRun.distance >= 0.02 && selectedRun.route && selectedRun.route.length > 2 && (
+                                 <View style={{position: 'absolute', right: -20, top: -50, bottom: 0, zIndex: -1, opacity: 0.9}}>
+                                    <Svg width={250} height={400} viewBox="0 0 250 400">
+                                       <SvgPolyline 
+                                          points={getSvgPoints(selectedRun.route, 250, 400)} 
+                                          fill="none" 
+                                          stroke={LIME} 
+                                          strokeWidth="6" 
+                                          strokeLinecap="round" 
+                                          strokeLinejoin="round" 
+                                       />
+                                    </Svg>
+                                 </View>
+                              )}
+
+                              <Text style={{color: '#FFF', fontSize: 11, fontWeight: '700'}}>Distance</Text>
+                              <View style={{flexDirection: 'row', alignItems: 'baseline', marginBottom: 15}}>
+                                 <Text style={{color: '#FFF', fontSize: 44, fontWeight: '900'}}>{selectedRun.distance?.toFixed(2)}</Text>
+                                 <Text style={{color: '#FFF', fontSize: 18, fontWeight: '800', marginLeft: 4}}>km</Text>
+                              </View>
+
+                              <Text style={{color: '#FFF', fontSize: 11, fontWeight: '700'}}>Pace</Text>
+                              <Text style={{color: '#FFF', fontSize: 18, fontWeight: '800', marginBottom: 12}}>{selectedRun.pace} /km</Text>
+
+                              <Text style={{color: '#FFF', fontSize: 11, fontWeight: '700'}}>Time</Text>
+                              <Text style={{color: '#FFF', fontSize: 18, fontWeight: '800', marginBottom: 12}}>{timeText(selectedRun.duration)}</Text>
+
+                              <Text style={{color: '#FFF', fontSize: 11, fontWeight: '700'}}>Calories</Text>
+                              <Text style={{color: '#FFF', fontSize: 18, fontWeight: '800', marginBottom: 12}}>{selectedRun.calories}</Text>
+
+                              <Text style={{color: '#FFF', fontSize: 11, fontWeight: '700'}}>Top Speed</Text>
+                              <Text style={{color: '#FFF', fontSize: 18, fontWeight: '800', marginBottom: 12}}>{selectedRun.topSpeed} km/h</Text>
+                              
+                              <Text style={{color: '#FFF', fontSize: 11, fontWeight: '700'}}>Avg Speed</Text>
+                              <Text style={{color: '#FFF', fontSize: 18, fontWeight: '800'}}>{selectedRun.avgSpeed} km/h</Text>
+                           </View>
+
+                        </ImageBackground>
+                     </ViewShot>
+
+                     <View style={{paddingVertical: 20}}>
+                        <View style={{flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20}}>
+                           
+                           <TouchableOpacity onPress={setDefaultPhoto} style={{alignItems: 'center', width: '23%'}}>
+                              <View style={{backgroundColor: CARD, height: 50, width: '100%', borderRadius: 15, borderWidth: 1, borderColor: BORDER, alignItems: 'center', justifyContent: 'center'}}><Ionicons name="image" size={22} color={LIME}/></View>
+                              <Text style={{color: '#FFF', fontSize: 11, marginTop: 6}}>Photo</Text>
+                           </TouchableOpacity>
+                           
+                           <TouchableOpacity onPress={openSelfieCamera} style={{alignItems: 'center', width: '23%'}}>
+                              <View style={{backgroundColor: CARD, height: 50, width: '100%', borderRadius: 15, borderWidth: 1, borderColor: BORDER, alignItems: 'center', justifyContent: 'center'}}><Ionicons name="camera" size={22} color={LIME}/></View>
+                              <Text style={{color: '#FFF', fontSize: 11, marginTop: 6}}>Selfie</Text>
+                           </TouchableOpacity>
+                           
+                           <View style={{alignItems: 'center', width: '23%'}}>
+                              <View style={{backgroundColor: CARD, height: 50, width: '100%', borderRadius: 15, borderWidth: 1, borderColor: BORDER, alignItems: 'center', justifyContent: 'center'}}>
+                                 <Switch value={showVignette} onValueChange={setShowVignette} trackColor={{ false: "#2A3644", true: LIME }} thumbColor="#FFF" style={{ transform: [{ scaleX: 0.75 }, { scaleY: 0.75 }] }}/>
+                              </View>
+                              <Text style={{color: '#FFF', fontSize: 11, marginTop: 6}}>Vignette</Text>
+                           </View>
+
+                           <View style={{alignItems: 'center', width: '23%'}}>
+                              <View style={{backgroundColor: CARD, height: 50, width: '100%', borderRadius: 15, borderWidth: 1, borderColor: BORDER, alignItems: 'center', justifyContent: 'center'}}>
+                                 <Switch value={showRouteMap} onValueChange={setShowRouteMap} trackColor={{ false: "#2A3644", true: LIME }} thumbColor="#FFF" style={{ transform: [{ scaleX: 0.75 }, { scaleY: 0.75 }] }}/>
+                              </View>
+                              <Text style={{color: '#FFF', fontSize: 11, marginTop: 6}}>Route</Text>
+                           </View>
+
+                        </View>
+                        
+                        <TouchableOpacity onPress={shareResult} style={{backgroundColor: LIME, padding: 16, borderRadius: 15, alignItems: 'center', elevation: 5}}>
+                           <Text style={{color: '#000', fontWeight: '900', fontSize: 16, letterSpacing: 1}}>SHARE</Text>
+                        </TouchableOpacity>
+                     </View>
+                  </View>
+               )}
+            </View>
+         </Modal>
+
       </SafeAreaView>
     );
   }
@@ -770,13 +1056,54 @@ function AppContent() {
         <View style={s.mainWrapper}>
           {tab === "Run" && renderRun()}
           
-          {tab === "History" && (
+          {tab === "Stats" && (
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scrollContent}>
-               <Text style={s.pageTitle}>Run History</Text>
+               <Text style={s.pageTitle}>Statistics</Text>
+
+               {/* 1. RECENT ACTIVITY (COMPACT) */}
+               <View style={s.premiumCardWrapper}>
+                  <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15}}>
+                     <Text style={s.sectionHeader}>RECENT ACTIVITY</Text>
+                     {history.length > 3 && (
+                        <TouchableOpacity onPress={() => setShowAllHistory(true)}>
+                           <Text style={{color: LIME, fontSize: 11, fontWeight: '700'}}>SHOW ALL</Text>
+                        </TouchableOpacity>
+                     )}
+                  </View>
+                  {history.length > 0 ? (
+                     <View>
+                        {history.slice(0, 3).map((item, index) => renderCompactRun(item, false, 0, index === Math.min(history.length, 3) - 1))}
+                     </View>
+                  ) : (
+                     <Text style={{color:MUTED, textAlign:'center', marginVertical: 10, fontSize: 12}}>No runs saved yet.</Text>
+                  )}
+               </View>
                
+               {/* 2. OVERALL PROGRESS */}
+               <View style={s.premiumCardWrapper}>
+                  <Text style={s.sectionHeader}>OVERALL PROGRESS</Text>
+                  <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+                     <View style={{alignItems: 'center', flex: 1}}>
+                        <Text style={{color: MUTED, fontSize: 10, fontWeight: '700', letterSpacing: 1}}>DISTANCE</Text>
+                        <Text style={{color: '#FFF', fontSize: 24, fontWeight: '900', marginTop: 4}}>{totalDistance.toFixed(1)} <Text style={{fontSize: 12, color: LIME}}>km</Text></Text>
+                     </View>
+                     <View style={{width: 1, backgroundColor: BORDER}} />
+                     <View style={{alignItems: 'center', flex: 1}}>
+                        <Text style={{color: MUTED, fontSize: 10, fontWeight: '700', letterSpacing: 1}}>TIME</Text>
+                        <Text style={{color: '#FFF', fontSize: 20, fontWeight: '900', marginTop: 8}}>{timeText(totalDuration)}</Text>
+                     </View>
+                     <View style={{width: 1, backgroundColor: BORDER}} />
+                     <View style={{alignItems: 'center', flex: 1}}>
+                        <Text style={{color: MUTED, fontSize: 10, fontWeight: '700', letterSpacing: 1}}>RUNS</Text>
+                        <Text style={{color: '#FFF', fontSize: 24, fontWeight: '900', marginTop: 4}}>{history.length}</Text>
+                     </View>
+                  </View>
+               </View>
+
+               {/* 3. CONSISTENCY GRAPH */}
                {history.length > 0 && (
-                 <View style={s.graphContainer}>
-                   <Text style={{color: '#FFF', fontWeight: '800', fontSize: 13, marginBottom: 20}}>CONSISTENCY (Last 7 Runs)</Text>
+                 <View style={s.premiumCardWrapper}>
+                   <Text style={s.sectionHeader}>CONSISTENCY (Last 7 Runs)</Text>
                    <View style={s.graphBars}>
                       {history.slice(0, 7).reverse().map((h, i) => {
                          const ht = Math.max((h.distance / maxGraphDist) * 100, 5); 
@@ -793,25 +1120,62 @@ function AppContent() {
                  </View>
                )}
 
-               {history.map(item => (
-                 <TouchableOpacity key={item.id} style={s.premiumCard} onPress={() => setSelectedRun(item)} activeOpacity={0.8}>
-                   <View style={{flexDirection:'row', alignItems:'center', justifyContent:'space-between'}}>
-                      <View>
-                        <Text style={s.historyDate}>{new Date(item.date).toLocaleDateString()}</Text>
-                        <View style={{flexDirection:'row', alignItems:'baseline', gap:4, marginTop: 4}}>
-                           <Text style={s.historyValue}>{item.distance.toFixed(2)}</Text>
-                           <Text style={{color: MUTED, fontSize: 12}}>km</Text>
+               {/* 4. TOP 3 RUNS (COMPACT) */}
+               {history.length > 1 && (
+                  <View style={s.premiumCardWrapper}>
+                     <Text style={s.sectionHeader}>LEADERBOARD (TOP 3)</Text>
+                     <View>
+                        {topRuns.slice(0, 3).map((item, index) => renderCompactRun(item, true, index + 1, index === Math.min(topRuns.length, 3) - 1))}
+                     </View>
+                  </View>
+               )}
+
+               {/* 5. PERSONAL BEST (HIGHLIGHT CARD) */}
+               {bestRun && (
+                  <View style={[s.premiumCardWrapper, {borderColor: '#FFD700', backgroundColor: 'rgba(255, 215, 0, 0.05)'}]}>
+                     <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 15}}>
+                        <Ionicons name="trophy" size={18} color="#FFD700" />
+                        <Text style={[s.sectionHeader, {marginBottom: 0, color: '#FFD700'}]}>PERSONAL BEST</Text>
+                     </View>
+                     <TouchableOpacity onPress={() => setSelectedRun(bestRun)} activeOpacity={0.8} style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
+                        <View>
+                           <Text style={{color: '#FFF', fontSize: 32, fontWeight: '900'}}>{bestRun.distance.toFixed(2)} <Text style={{fontSize: 16, color: LIME}}>km</Text></Text>
+                           <Text style={{color: MUTED, fontSize: 11, marginTop: 4}}>{new Date(bestRun.date).toLocaleDateString()} • {timeText(bestRun.duration)}</Text>
                         </View>
-                      </View>
-                      <View style={{alignItems:'flex-end'}}>
-                        <Text style={{color: '#FFF', fontWeight:'700', fontSize: 16}}>{timeText(item.duration)}</Text>
-                        <Text style={{color: LIME, fontSize: 12, marginTop:4, fontWeight:'700'}}>{item.pace} /km</Text>
-                      </View>
-                      <Ionicons name="chevron-forward" size={20} color={MUTED} />
-                   </View>
-                 </TouchableOpacity>
-               ))}
-               {history.length === 0 && <Text style={{color:MUTED, textAlign:'center', marginTop: 50}}>No runs saved yet.</Text>}
+                        <Ionicons name="chevron-forward" size={20} color={MUTED} />
+                     </TouchableOpacity>
+                  </View>
+               )}
+
+               {/* 6. BMI CALCULATOR WIDGET */}
+               <View style={s.premiumCardWrapper}>
+                  <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15}}>
+                     <Text style={s.sectionHeader}>BODY PROFILE (BMI)</Text>
+                     <TouchableOpacity onPress={() => setShowBmiModal(true)}>
+                        <Ionicons name="pencil" size={16} color={LIME} />
+                     </TouchableOpacity>
+                  </View>
+                  
+                  {savedBmi ? (
+                     <View style={{alignItems: 'center'}}>
+                        <View style={{flexDirection: 'row', alignItems: 'baseline', gap: 8, marginBottom: 5}}>
+                           <Text style={{color: '#FFF', fontSize: 40, fontWeight: '900'}}>{savedBmi.bmi}</Text>
+                           <View style={{backgroundColor: savedBmi.category === 'Normal' ? LIME : savedBmi.category === 'Underweight' ? '#3B82F6' : '#EF4444', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10}}>
+                              <Text style={{color: '#000', fontSize: 10, fontWeight: '800'}}>{savedBmi.category}</Text>
+                           </View>
+                        </View>
+                        <Text style={{color: MUTED, fontSize: 12, textAlign: 'center', marginTop: 5, paddingHorizontal: 10}}>{savedBmi.suggestion}</Text>
+                     </View>
+                  ) : (
+                     <View style={{alignItems: 'center', paddingVertical: 10}}>
+                        <Text style={{color: MUTED, fontSize: 12, marginBottom: 15}}>No body profile data found.</Text>
+                        <TouchableOpacity style={{backgroundColor: LIME, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 12}} onPress={() => setShowBmiModal(true)}>
+                           <Text style={{color: '#000', fontWeight: '800', fontSize: 12}}>CALCULATE BMI</Text>
+                        </TouchableOpacity>
+                     </View>
+                  )}
+               </View>
+
             </ScrollView>
           )}
           
@@ -849,9 +1213,16 @@ function AppContent() {
              <View style={{flex: 1}}>
                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{paddingBottom: 120}}>
                  <Text style={s.pageTitle}>Playlist</Text>
-                 <TouchableOpacity style={s.addMusic} onPress={chooseMusic} activeOpacity={0.8}>
-                     <Text style={{color: '#000', fontWeight: '800', letterSpacing: 0.5}}>ADD MUSIC FILES</Text>
-                 </TouchableOpacity>
+                 <View style={{flexDirection: 'row', gap: 10, marginBottom: 20}}>
+                     <TouchableOpacity style={[s.addMusic, {flex: 1, marginBottom: 0}]} onPress={chooseMusic} activeOpacity={0.8}>
+                         <Text style={{color: '#000', fontWeight: '800', letterSpacing: 0.5, textAlign: 'center'}}>ADD MUSIC</Text>
+                     </TouchableOpacity>
+                     <TouchableOpacity style={[s.addMusic, {flex: 1, marginBottom: 0, backgroundColor: '#FF0000', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6}]} onPress={openYTMusic} activeOpacity={0.8}>
+                         <Ionicons name="logo-youtube" size={18} color="#FFF" />
+                         <Text style={{color: '#FFF', fontWeight: '800', letterSpacing: 0.5}}>YT MUSIC</Text>
+                     </TouchableOpacity>
+                 </View>
+                 
                  {files.map((file, i) => (
                     <View key={i} style={s.musicCard}>
                       <TouchableOpacity style={{flex: 1, paddingVertical: 18, paddingLeft: 18}} onPress={() => playMusicAt(i)}>
@@ -908,7 +1279,7 @@ function AppContent() {
         </View>
 
         <View style={[s.bottomNav, { paddingBottom: Math.max(insets.bottom, 10) }]} pointerEvents={locked ? "none" : "auto"}>
-          {[{ name: "Run", icon: "flash" }, { name: "Music", icon: "musical-notes-outline" }, { name: "Map", icon: "map-outline" }, { name: "History", icon: "time-outline" }].map(item => {
+          {[{ name: "Run", icon: "flash" }, { name: "Music", icon: "musical-notes-outline" }, { name: "Map", icon: "map-outline" }, { name: "Stats", icon: "stats-chart" }].map(item => {
             const active = tab === item.name;
             return (
               <TouchableOpacity key={item.name} style={s.navItem} onPress={() => setTab(item.name)} activeOpacity={0.75}>
@@ -920,43 +1291,64 @@ function AppContent() {
           })}
         </View>
 
-        <Modal visible={showGhostResult} transparent animationType="fade">
-           <View style={s.ghostResultOverlay}>
-              <View style={s.ghostResultCard}>
-                 <View style={{width: 50, height: 50, borderRadius: 25, backgroundColor: LIME, alignItems:'center', justifyContent:'center', marginBottom: 15}}>
-                    <Ionicons name={ghostStats?.current.distance >= ghostStats?.ghost.distance ? "trophy" : "trending-up"} size={26} color="#000" />
+        {/* BMI Modal */}
+        <Modal visible={showBmiModal} transparent animationType="slide">
+           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.7)'}}>
+              <View style={{backgroundColor: CARD, padding: 25, borderTopLeftRadius: 30, borderTopRightRadius: 30, borderWidth: 1, borderColor: BORDER}}>
+                 <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25}}>
+                    <Text style={{color: '#FFF', fontSize: 20, fontWeight: '800'}}>Body Profile</Text>
+                    <TouchableOpacity onPress={() => setShowBmiModal(false)}><Ionicons name="close" size={24} color={MUTED} /></TouchableOpacity>
                  </View>
-                 <Text style={{color:'#FFF', fontSize: 22, fontWeight:'900', marginBottom: 8}}>
-                    {ghostStats?.current.distance >= ghostStats?.ghost.distance ? "AWESOME WORK!" : "NICE TRY!"}
-                 </Text>
-                 <Text style={{color:MUTED, fontSize: 12, textAlign:'center', marginBottom: 25}}>
-                    {ghostStats?.current.distance >= ghostStats?.ghost.distance 
-                       ? `You beat your ghost by ${(ghostStats?.current.distance - ghostStats?.ghost.distance).toFixed(2)} km.` 
-                       : `You were behind by ${Math.abs(ghostStats?.current.distance - ghostStats?.ghost.distance).toFixed(2)} km.`}
-                 </Text>
+                 
+                 <Text style={{color: MUTED, fontSize: 12, fontWeight: '700', marginBottom: 8, marginLeft: 4}}>HEIGHT (cm)</Text>
+                 <TextInput style={s.inputField} keyboardType="numeric" placeholder="e.g. 175" placeholderTextColor={MUTED} value={bmiData.height} onChangeText={t => setBmiData({...bmiData, height: t})} />
 
-                 <View style={{width:'100%', gap: 15, marginBottom: 25}}>
-                    <View style={s.ghostStatRow}>
-                       <Text style={{color: MUTED, fontSize: 12, width: '30%'}}>Time</Text>
-                       <Text style={{color: '#FFF', fontSize: 14, fontWeight:'700', width: '35%', textAlign:'center'}}>{timeText(ghostStats?.current.duration)}</Text>
-                       <Text style={{color: MUTED, fontSize: 12, width: '35%', textAlign:'right'}}>{timeText(ghostStats?.ghost.duration)}</Text>
-                    </View>
-                    <View style={s.ghostStatRow}>
-                       <Text style={{color: MUTED, fontSize: 12, width: '30%'}}>Distance</Text>
-                       <Text style={{color: LIME, fontSize: 14, fontWeight:'700', width: '35%', textAlign:'center'}}>{ghostStats?.current.distance.toFixed(2)} km</Text>
-                       <Text style={{color: MUTED, fontSize: 12, width: '35%', textAlign:'right'}}>{ghostStats?.ghost.distance.toFixed(2)} km</Text>
-                    </View>
-                    <View style={s.ghostStatRow}>
-                       <Text style={{color: MUTED, fontSize: 12, width: '30%'}}>Speed</Text>
-                       <Text style={{color: '#FFF', fontSize: 14, fontWeight:'700', width: '35%', textAlign:'center'}}>{ghostStats?.current.avgSpeed} km/h</Text>
-                       <Text style={{color: MUTED, fontSize: 12, width: '35%', textAlign:'right'}}>{ghostStats?.ghost.avgSpeed} km/h</Text>
-                    </View>
+                 <Text style={{color: MUTED, fontSize: 12, fontWeight: '700', marginBottom: 8, marginLeft: 4}}>WEIGHT (kg)</Text>
+                 <TextInput style={s.inputField} keyboardType="numeric" placeholder="e.g. 70" placeholderTextColor={MUTED} value={bmiData.weight} onChangeText={t => setBmiData({...bmiData, weight: t})} />
+
+                 <Text style={{color: MUTED, fontSize: 12, fontWeight: '700', marginBottom: 8, marginLeft: 4}}>GENDER</Text>
+                 <View style={{flexDirection: 'row', gap: 15, marginBottom: 30}}>
+                    {['Male', 'Female'].map(g => (
+                       <TouchableOpacity key={g} onPress={() => setBmiData({...bmiData, gender: g})} style={[s.genderBtn, bmiData.gender === g && {backgroundColor: LIME, borderColor: LIME}]}>
+                          <Text style={{color: bmiData.gender === g ? '#000' : MUTED, fontWeight: '700'}}>{g}</Text>
+                       </TouchableOpacity>
+                    ))}
                  </View>
 
-                 <TouchableOpacity style={s.ghostCloseBtn} onPress={() => { setShowGhostResult(false); setTab("History"); }}>
-                    <Text style={{color:'#000', fontWeight:'800', fontSize: 14}}>DONE</Text>
+                 <TouchableOpacity style={{backgroundColor: LIME, padding: 18, borderRadius: 16, alignItems: 'center'}} onPress={calculateBMI}>
+                    <Text style={{color: '#000', fontWeight: '900', fontSize: 16, letterSpacing: 1}}>SAVE & CALCULATE</Text>
                  </TouchableOpacity>
               </View>
+           </KeyboardAvoidingView>
+        </Modal>
+
+        {/* All History Modal with Large Cards */}
+        <Modal visible={showAllHistory} transparent animationType="slide">
+           <View style={{flex: 1, backgroundColor: BG, paddingTop: 50}}>
+              <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 20}}>
+                 <Text style={{color: '#FFF', fontSize: 24, fontWeight: '800'}}>All History</Text>
+                 <TouchableOpacity onPress={() => setShowAllHistory(false)}><Ionicons name="close" size={28} color="#FFF" /></TouchableOpacity>
+              </View>
+              <ScrollView contentContainerStyle={{padding: 15, paddingBottom: 50}}>
+                 {history.map(item => (
+                   <TouchableOpacity key={item.id} style={s.premiumCard} onPress={() => { setShowAllHistory(false); setSelectedRun(item); }} activeOpacity={0.8}>
+                     <View style={{flexDirection:'row', alignItems:'center', justifyContent:'space-between'}}>
+                        <View>
+                          <Text style={s.historyDate}>{new Date(item.date).toLocaleDateString()}</Text>
+                          <View style={{flexDirection:'row', alignItems:'baseline', gap:4, marginTop: 4}}>
+                             <Text style={s.historyValue}>{item.distance.toFixed(2)}</Text>
+                             <Text style={{color: MUTED, fontSize: 12}}>km</Text>
+                          </View>
+                        </View>
+                        <View style={{alignItems:'flex-end'}}>
+                          <Text style={{color: '#FFF', fontWeight:'700', fontSize: 16}}>{timeText(item.duration)}</Text>
+                          <Text style={{color: LIME, fontSize: 12, marginTop:4, fontWeight:'700'}}>{item.pace} /km</Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color={MUTED} />
+                     </View>
+                   </TouchableOpacity>
+                 ))}
+              </ScrollView>
            </View>
         </Modal>
 
@@ -1064,9 +1456,15 @@ const s = StyleSheet.create({
   catBtnTextActive: { color: '#000', fontWeight: '800' },
 
   pageTitle: { color: "#FFF", fontSize: 26, fontWeight: "800", marginBottom: 15, marginTop: 10, letterSpacing: -0.5 },
-  premiumCard: { backgroundColor: CARD, padding: 18, borderRadius: 22, borderWidth: 1, borderColor: BORDER, marginBottom: 12, shadowColor: "#000", shadowOffset:{width:0, height:4}, shadowOpacity: 0.2, shadowRadius: 10, elevation: 4 },
+  
+  premiumCardWrapper: { backgroundColor: CARD, borderRadius: 24, padding: 20, borderWidth: 1, borderColor: BORDER, marginBottom: 16, shadowColor: "#000", shadowOffset: {width: 0, height: 8}, shadowOpacity: 0.3, shadowRadius: 15, elevation: 8 },
+  sectionHeader: { color: MUTED, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 15 },
+  premiumCard: { backgroundColor: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 18, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', marginBottom: 10 },
+  compactRunRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
   historyDate: { color: MUTED, fontSize: 11, fontWeight: '600' },
-  historyValue: { color: "#FFF", fontSize: 26, fontWeight: "800", letterSpacing: -1 },
+  historyValue: { color: "#FFF", fontSize: 22, fontWeight: "800", letterSpacing: -0.5 },
+  inputField: { backgroundColor: '#1A2633', color: '#FFF', padding: 16, borderRadius: 14, borderWidth: 1, borderColor: BORDER, marginBottom: 20, fontSize: 16, fontWeight: '600' },
+  genderBtn: { flex: 1, padding: 14, borderRadius: 14, borderWidth: 1, borderColor: BORDER, alignItems: 'center' },
   
   musicCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: CARD, borderRadius: 22, borderWidth: 1, borderColor: BORDER, marginBottom: 12, shadowColor: "#000", shadowOffset:{width:0, height:4}, shadowOpacity: 0.2, shadowRadius: 10, elevation: 4 },
   
